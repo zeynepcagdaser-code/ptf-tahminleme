@@ -102,6 +102,27 @@ source venv/bin/activate
 streamlit run streamlit_app.py
 ```
 
+## Streamlit Cloud Deploy
+
+Streamlit Community Cloud'da Python surumu repo icindeki `runtime.txt` ile degil,
+uygulama olusturulurken `Advanced settings` ekranindan secilir. Bu proje icin
+Python `3.11` secilmelidir.
+
+Mevcut app yanlis Python surumuyle olustuysa:
+
+1. Streamlit Cloud'da mevcut app ayarlarini ve Secrets degerlerini not alin.
+2. App'i silin.
+3. Ayni GitHub repo ile yeniden deploy edin:
+
+```text
+Repository: zeynepcagdaser-code/ptf-tahminleme
+Branch: main
+Main file path: streamlit_app.py
+Python version: 3.11
+```
+
+4. Secrets alanina EPİAŞ bilgilerini tekrar ekleyin.
+
 ## Hata Cozumleri
 
 `python3.11: command not found` hatasi:
