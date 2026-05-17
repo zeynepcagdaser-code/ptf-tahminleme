@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from dotenv import load_dotenv
 
 
 ROOT = Path(__file__).resolve().parent
@@ -22,10 +24,51 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False)
-def load_dashboard_data() -> dict:
+def load_snapshot_dashboard_data() -> dict:
     if APP_DATA_PATH.exists():
         return json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
     return build_from_local_processed()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_live_dashboard_data() -> dict:
+    snapshot = load_snapshot_dashboard_data()
+
+    from src.build_final_hourly_dataset import build_final_hourly_dataset
+    from src.check_latest_available_times import run_latest_available_times_check
+    from src.fetch_final_selected_features import run_fetch_final_selected_features
+    from src.fill_final_dataset_missing import fill_final_dataset_missing
+
+    fetch_summary = run_fetch_final_selected_features()
+    raw_dataset, flags = build_final_hourly_dataset()
+    final_dataset, missing_report = fill_final_dataset_missing(raw_dataset)
+
+    output_path = LOCAL_PROCESSED_DIR / "final_hourly_dataset.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    final_dataset.to_csv(output_path, index=False)
+
+    latest_report = run_latest_available_times_check()
+    summary = build_final_summary(final_dataset)
+    summary.update(
+        {
+            "attempted_features": fetch_summary.get("attempted_features", 0),
+            "successful_features": fetch_summary.get("successful_features", 0),
+            "failed_features": fetch_summary.get("failed_features", 0),
+            "ratio_created": bool(flags.get("ratio_created")),
+            "grf_daily_broadcast": bool(flags.get("grf_daily_broadcast")),
+            "usd_daily_broadcast": bool(flags.get("usd_daily_broadcast")),
+        }
+    )
+
+    return {
+        "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "source": "live_epias",
+        "summary": summary,
+        "metrics": snapshot.get("metrics", []),
+        "latest_available": latest_report.to_dict(orient="records"),
+        "missing_report": missing_report.to_dict(orient="records"),
+        "predictions": snapshot.get("predictions", {}),
+    }
 
 
 def build_from_local_processed() -> dict:
@@ -54,6 +97,7 @@ def build_from_local_processed() -> dict:
 
     return {
         "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "source": "local_processed",
         "summary": summary,
         "metrics": metrics.to_dict(orient="records"),
         "latest_available": latest.to_dict(orient="records"),
@@ -62,6 +106,22 @@ def build_from_local_processed() -> dict:
             "before_14": prediction_records(before),
             "after_14": prediction_records(after),
         },
+    }
+
+
+def build_final_summary(final: pd.DataFrame) -> dict:
+    if final.empty:
+        return {}
+
+    frame = final.copy()
+    frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+    return {
+        "final_rows": int(len(frame)),
+        "final_start": str(frame["datetime"].min()),
+        "final_end": str(frame["datetime"].max()),
+        "ptf_min": float(frame["ptf"].min()),
+        "ptf_max": float(frame["ptf"].max()),
+        "ptf_mean": float(frame["ptf"].mean()),
     }
 
 
@@ -87,14 +147,33 @@ def scenario_label(value: str) -> str:
     return "14:00 Sonrası" if value == "after_14" else "14:00 Öncesi"
 
 
-data = load_dashboard_data()
-summary = data.get("summary", {})
-metrics = pd.DataFrame(data.get("metrics", []))
-latest = pd.DataFrame(data.get("latest_available", []))
-missing = pd.DataFrame(data.get("missing_report", []))
+def apply_streamlit_secrets_to_env() -> None:
+    load_dotenv(ROOT / ".env")
+    try:
+        secrets = dict(st.secrets)
+    except Exception:
+        secrets = {}
+
+    for key in (
+        "EPIAS_USERNAME",
+        "EPIAS_PASSWORD",
+        "EPIAS_TGT",
+        "EPIAS_TIMEOUT_SECONDS",
+        "EPIAS_PAGE_SIZE",
+        "EPIAS_BASE_URL",
+        "EPIAS_AUTH_URL",
+    ):
+        value = secrets.get(key)
+        if value is not None and str(value).strip():
+            os.environ[key] = str(value)
+
+
+def has_epias_credentials() -> bool:
+    apply_streamlit_secrets_to_env()
+    return bool(os.getenv("EPIAS_TGT") or (os.getenv("EPIAS_USERNAME") and os.getenv("EPIAS_PASSWORD")))
+
 
 st.title("PTF Tahminleme Paneli")
-st.caption("D+2 PTF tahmini için Streamlit paneli. Veri snapshot'ı GitHub reposundan yüklenir.")
 
 with st.sidebar:
     st.header("Panel")
@@ -105,7 +184,45 @@ with st.sidebar:
         index=1,
     )
     st.divider()
-    st.caption(f"Snapshot zamanı: {data.get('generated_at', '-')}")
+    live_mode = st.toggle("Canlı EPİAŞ verisi", value=True)
+    refresh_now = st.button("Veriyi şimdi güncelle", type="primary")
+    st.caption("Canlı mod Streamlit Secrets içindeki EPİAŞ bilgileriyle çalışır.")
+
+if refresh_now:
+    load_live_dashboard_data.clear()
+
+credentials_ready = has_epias_credentials()
+
+if live_mode and credentials_ready:
+    with st.spinner("EPİAŞ verileri canlı olarak çekiliyor ve final dataset güncelleniyor..."):
+        try:
+            data = load_live_dashboard_data()
+            data_source_label = "Canlı EPİAŞ"
+        except Exception as exc:  # noqa: BLE001 - UI should fall back instead of crashing.
+            st.error(f"Canlı veri güncellemesi tamamlanamadı: {type(exc).__name__}: {exc}")
+            data = load_snapshot_dashboard_data()
+            data_source_label = "Snapshot"
+elif live_mode:
+    st.warning("Canlı veri için Streamlit Secrets içine EPIAS_USERNAME/EPIAS_PASSWORD veya EPIAS_TGT eklenmeli.")
+    data = load_snapshot_dashboard_data()
+    data_source_label = "Snapshot"
+else:
+    data = load_snapshot_dashboard_data()
+    data_source_label = "Snapshot"
+
+summary = data.get("summary", {})
+metrics = pd.DataFrame(data.get("metrics", []))
+latest = pd.DataFrame(data.get("latest_available", []))
+missing = pd.DataFrame(data.get("missing_report", []))
+
+st.caption(
+    "D+2 PTF tahmini paneli. Canlı modda EPİAŞ verisi çekilir; model metrikleri son eğitilmiş snapshot'tan gösterilir."
+)
+
+with st.sidebar:
+    st.divider()
+    st.caption(f"Veri kaynağı: {data_source_label}")
+    st.caption(f"Güncelleme zamanı: {data.get('generated_at', '-')}")
 
 metric_cols = st.columns(5)
 metric_cols[0].metric("Final Satır", f"{summary.get('final_rows', 0):,}")
@@ -116,6 +233,12 @@ metric_cols[3].metric("PTF Ortalama", format_number(summary.get("ptf_mean")))
 after_row = metrics.loc[metrics.get("scenario", pd.Series(dtype=str)).eq("after_14")]
 after_r2 = after_row["R2"].iloc[0] if not after_row.empty and "R2" in after_row else None
 metric_cols[4].metric("After 14 R2", format_number(after_r2, 3))
+
+live_cols = st.columns(4)
+live_cols[0].metric("Çekilmeye Çalışılan", f"{summary.get('attempted_features', 0):,}")
+live_cols[1].metric("Başarılı Veri", f"{summary.get('successful_features', 0):,}")
+live_cols[2].metric("Başarısız Veri", f"{summary.get('failed_features', 0):,}")
+live_cols[3].metric("USD/GRF Yayılım", "Tamam" if summary.get("usd_daily_broadcast") or summary.get("grf_daily_broadcast") else "-")
 
 tab_overview, tab_predictions, tab_data = st.tabs(["Performans", "Tahminler", "Veri Durumu"])
 
