@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PTF Tahminleme Paneli</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #0b6bcb;
+      --good: #15803d;
+      --warn: #b45309;
+      --bad: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      padding: 18px 28px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    header p {
+      color: var(--muted);
+      margin: 6px 0 0;
+      font-size: 14px;
+    }
+    main {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    .metrics {
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      margin-bottom: 18px;
+    }
+    .two {
+      grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+      align-items: start;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .metric-value {
+      margin-top: 6px;
+      font-size: 24px;
+      font-weight: 750;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 0 0 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 650;
+      background: #fbfcfd;
+    }
+    .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+      border: 1px solid var(--line);
+    }
+    .good { color: var(--good); }
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    .chart {
+      min-height: 420px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 8px 11px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: #eef6ff;
+    }
+    footer {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 24px 0 10px;
+    }
+    @media (max-width: 900px) {
+      .metrics, .two { grid-template-columns: 1fr; }
+      main { padding: 16px; }
+      header { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PTF Tahminleme Paneli</h1>
+    <p>D+2 PTF tahmini için GitHub Pages üzerinden yayınlanan izleme paneli</p>
+  </header>
+
+  <main>
+    <section class="grid metrics" id="summaryCards"></section>
+
+    <section class="grid two">
+      <div class="card">
+        <h2>D+2 Model Performansı</h2>
+        <div id="metricsChart" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>Senaryo Karşılaştırması</h2>
+        <div id="metricsTable"></div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <div class="tabs">
+        <button id="beforeBtn" class="active">14:00 Öncesi</button>
+        <button id="afterBtn">14:00 Sonrası</button>
+      </div>
+      <div id="predictionChart" class="chart"></div>
+    </section>
+
+    <section class="grid two" style="margin-top:16px;">
+      <div class="card">
+        <h2>Son Yayınlanan Veri Zamanları</h2>
+        <div id="latestTable"></div>
+      </div>
+      <div class="card">
+        <h2>Eksik Veri Raporu</h2>
+        <div id="missingTable"></div>
+      </div>
+    </section>
+
+    <footer id="footer"></footer>
+  </main>
+
+  <script>
+    const fmt = new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 });
+    let dashboard = null;
+    let activeScenario = "before_14";
+
+    async function init() {
+      const response = await fetch("data/dashboard_data.json", { cache: "no-store" });
+      dashboard = await response.json();
+      renderSummary();
+      renderMetrics();
+      renderPredictionChart();
+      renderLatest();
+      renderMissing();
+      document.getElementById("footer").textContent = `Son veri güncelleme: ${dashboard.generated_at}`;
+      document.getElementById("beforeBtn").onclick = () => setScenario("before_14");
+      document.getElementById("afterBtn").onclick = () => setScenario("after_14");
+    }
+
+    function setScenario(scenario) {
+      activeScenario = scenario;
+      document.getElementById("beforeBtn").classList.toggle("active", scenario === "before_14");
+      document.getElementById("afterBtn").classList.toggle("active", scenario === "after_14");
+      renderPredictionChart();
+    }
+
+    function renderSummary() {
+      const s = dashboard.summary || {};
+      const after = dashboard.metrics.find((m) => m.scenario === "after_14") || {};
+      const before = dashboard.metrics.find((m) => m.scenario === "before_14") || {};
+      const cards = [
+        ["Final Satır", fmt.format(s.final_rows || 0)],
+        ["Tarih Aralığı", `${shortDate(s.final_start)} → ${shortDate(s.final_end)}`],
+        ["After 14 RMSE", fmt.format(after.RMSE || 0)],
+        ["Before 14 RMSE", fmt.format(before.RMSE || 0)],
+        ["After 14 R²", Number(after.R2 || 0).toFixed(3)],
+      ];
+      document.getElementById("summaryCards").innerHTML = cards.map(([label, value]) => `
+        <div class="card">
+          <div class="metric-label">${label}</div>
+          <div class="metric-value">${value}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderMetrics() {
+      const rows = dashboard.metrics || [];
+      Plotly.newPlot("metricsChart", [
+        {
+          x: rows.map((r) => labelScenario(r.scenario)),
+          y: rows.map((r) => r.RMSE),
+          name: "RMSE",
+          type: "bar",
+          marker: { color: "#0b6bcb" }
+        },
+        {
+          x: rows.map((r) => labelScenario(r.scenario)),
+          y: rows.map((r) => r.MAE),
+          name: "MAE",
+          type: "bar",
+          marker: { color: "#16a34a" }
+        }
+      ], layout("Hata Metrikleri", "Değer"));
+
+      document.getElementById("metricsTable").innerHTML = table(rows.map((r) => ({
+        Senaryo: labelScenario(r.scenario),
+        Feature: r.feature_count,
+        MAE: fmt.format(r.MAE),
+        RMSE: fmt.format(r.RMSE),
+        SMAPE: `${fmt.format(r.SMAPE)}%`,
+        R2: Number(r.R2).toFixed(4),
+      })));
+    }
+
+    function renderPredictionChart() {
+      const rows = dashboard.predictions[activeScenario] || [];
+      Plotly.newPlot("predictionChart", [
+        {
+          x: rows.map((r) => r.target_datetime),
+          y: rows.map((r) => r.actual_ptf),
+          name: "Gerçek PTF",
+          type: "scatter",
+          mode: "lines",
+          line: { color: "#111827", width: 2 }
+        },
+        {
+          x: rows.map((r) => r.target_datetime),
+          y: rows.map((r) => r.predicted_ptf),
+          name: "Tahmin",
+          type: "scatter",
+          mode: "lines",
+          line: { color: "#0b6bcb", width: 2 }
+        }
+      ], layout(`${labelScenario(activeScenario)} - Son Test Tahminleri`, "PTF"));
+    }
+
+    function renderLatest() {
+      const rows = (dashboard.latest_available || []).map((r) => ({
+        Kaynak: r.data_source,
+        "Son Zaman": r.latest_available_time,
+        Frekans: r.inferred_frequency,
+        Gecikme: r.delay_text,
+        Kullanım: r.forecast_usage_recommendation,
+      }));
+      document.getElementById("latestTable").innerHTML = table(rows);
+    }
+
+    function renderMissing() {
+      const rows = (dashboard.missing_report || []).map((r) => ({
+        Kolon: r.column,
+        "Önce Eksik": r.missing_count_before,
+        "Sonra Eksik": r.missing_count_after,
+      }));
+      document.getElementById("missingTable").innerHTML = table(rows);
+    }
+
+    function table(rows) {
+      if (!rows.length) return "<p>Veri bulunamadı.</p>";
+      const keys = Object.keys(rows[0]);
+      return `<table><thead><tr>${keys.map((k) => `<th>${k}</th>`).join("")}</tr></thead><tbody>` +
+        rows.map((row) => `<tr>${keys.map((k) => `<td>${row[k] ?? ""}</td>`).join("")}</tr>`).join("") +
+        "</tbody></table>";
+    }
+
+    function layout(title, yTitle) {
+      return {
+        title: { text: title, font: { size: 16 } },
+        margin: { l: 54, r: 18, t: 48, b: 46 },
+        yaxis: { title: yTitle, gridcolor: "#edf0f5" },
+        xaxis: { gridcolor: "#f4f6f8" },
+        legend: { orientation: "h", y: -0.18 },
+        paper_bgcolor: "#ffffff",
+        plot_bgcolor: "#ffffff",
+        responsive: true
+      };
+    }
+
+    function labelScenario(value) {
+      return value === "after_14" ? "14:00 Sonrası" : "14:00 Öncesi";
+    }
+
+    function shortDate(value) {
+      if (!value) return "-";
+      return String(value).slice(0, 10);
+    }
+
+    init().catch((error) => {
+      document.body.innerHTML = `<main><div class="card"><h2>Panel yüklenemedi</h2><p>${error}</p></div></main>`;
+    });
+  </script>
+</body>
+</html>
