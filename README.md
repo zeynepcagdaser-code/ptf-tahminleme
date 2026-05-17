@@ -51,6 +51,13 @@ Paketleri kurma:
 pip install -r requirements.txt
 ```
 
+`requirements.txt` Streamlit panelinin bulutta hızlı kurulması için hafif tutulur.
+Model eğitimi ve notebook çalışmaları için tam ortamı kurmak isterseniz:
+
+```zsh
+pip install -r requirements-full.txt
+```
+
 Apple Silicon icin bu ortamda TensorFlow Metal destegi kullanilir. `tensorflow-metal` en yeni `tensorflow` surumuyle uyumsuzluk gosterebildigi icin ortam calisan surume sabitlenmistir:
 
 ```zsh
@@ -92,7 +99,7 @@ Streamlit testi:
 
 ```zsh
 source venv/bin/activate
-streamlit hello
+streamlit run streamlit_app.py
 ```
 
 ## Hata Cozumleri
