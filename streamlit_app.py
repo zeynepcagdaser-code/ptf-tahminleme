@@ -278,16 +278,15 @@ with st.sidebar:
         index=1,
     )
     st.divider()
-    live_mode = st.toggle("Canlı EPİAŞ verisi", value=True)
     refresh_now = st.button("Veriyi şimdi güncelle", type="primary")
-    st.caption("Canlı mod Streamlit Secrets içindeki EPİAŞ bilgileriyle çalışır.")
+    st.caption("Panel hızlı açılır. EPİAŞ canlı veri çekimi yalnızca bu butona basınca çalışır.")
 
 if refresh_now:
     load_live_dashboard_data.clear()
 
 credentials_ready = has_epias_credentials()
 
-if live_mode and credentials_ready:
+if refresh_now and credentials_ready:
     with st.spinner("EPİAŞ verileri canlı olarak çekiliyor ve final dataset güncelleniyor..."):
         try:
             data = load_live_dashboard_data()
@@ -296,8 +295,8 @@ if live_mode and credentials_ready:
             st.error(f"Canlı veri güncellemesi tamamlanamadı: {type(exc).__name__}: {exc}")
             data = load_snapshot_dashboard_data()
             data_source_label = "Snapshot"
-elif live_mode:
-    st.warning("Canlı veri için Streamlit Secrets içine EPIAS_USERNAME/EPIAS_PASSWORD veya EPIAS_TGT eklenmeli.")
+elif refresh_now:
+    st.warning("Canlı veri çekimi için Streamlit Secrets içine EPIAS_USERNAME/EPIAS_PASSWORD veya EPIAS_TGT eklenmeli.")
     data = load_snapshot_dashboard_data()
     data_source_label = "Snapshot"
 else:
@@ -311,7 +310,7 @@ missing = pd.DataFrame(data.get("missing_report", []))
 final_dataset = pd.DataFrame(data.get("final_dataset", []))
 
 st.caption(
-    "D+2 PTF tahmini paneli. Canlı modda EPİAŞ verisi çekilir; model metrikleri son eğitilmiş snapshot'tan gösterilir."
+    "D+2 PTF tahmini paneli. Sayfa hızlı açılır; EPİAŞ canlı veri çekimi yan menüdeki butonla başlatılır."
 )
 
 with st.sidebar:
