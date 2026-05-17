@@ -14,6 +14,49 @@ ROOT = Path(__file__).resolve().parent
 APP_DATA_PATH = ROOT / "app_data" / "dashboard_data.json"
 LOCAL_PROCESSED_DIR = ROOT / "data" / "processed"
 
+FEATURE_LABELS_TR = {
+    "ptf": "PTF",
+    "smf": "SMF",
+    "real_time_consumption": "Gerçek Zamanlı Tüketim",
+    "wind_generation": "Rüzgar Üretimi",
+    "solar_generation": "Güneş Üretimi",
+    "hydro_dam_generation": "Barajlı Hidro Üretimi",
+    "unlicensed_generation_total": "Lisanssız Üretim Toplamı",
+    "load_forecast_plan": "Yük Tahmin Planı",
+    "grf_tl": "Günlük Referans Fiyatı TL",
+    "usd_try": "USD/TRY",
+    "gop_fiyattan_bagimsiz_alis": "GÖP Fiyattan Bağımsız Alış",
+    "gop_fiyattan_bagimsiz_satis": "GÖP Fiyattan Bağımsız Satış",
+    "price_independent_buy_sell_ratio": "Fiyattan Bağımsız Alış/Satış Oranı",
+}
+
+COLUMN_LABELS_TR = {
+    "scenario": "Senaryo",
+    "feature_count": "Özellik Sayısı",
+    "MAE": "MAE",
+    "RMSE": "RMSE",
+    "SMAPE": "SMAPE",
+    "R2": "R²",
+    "target_datetime": "Hedef Tarih/Saat",
+    "actual_ptf": "Gerçek PTF",
+    "predicted_ptf": "Tahmin PTF",
+    "absolute_error": "Mutlak Hata",
+    "data_source": "Veri Kaynağı",
+    "latest_available_time": "Son Yayınlanan Zaman",
+    "inferred_frequency": "Veri Frekansı",
+    "delay_text": "Gecikme",
+    "forecast_usage_recommendation": "Tahminde Kullanım Önerisi",
+    "column": "Kolon",
+    "missing_count_before": "Doldurma Öncesi Eksik Sayısı",
+    "missing_count_after": "Doldurma Sonrası Eksik Sayısı",
+}
+
+FREQUENCY_LABELS_TR = {
+    "hourly": "Saatlik",
+    "daily": "Günlük",
+    "monthly": "Aylık",
+}
+
 
 st.set_page_config(
     page_title="PTF Tahminleme Paneli",
@@ -147,6 +190,29 @@ def scenario_label(value: str) -> str:
     return "14:00 Sonrası" if value == "after_14" else "14:00 Öncesi"
 
 
+def localized_dataframe(frame: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+
+    display = frame.copy()
+    if columns is not None:
+        display = display[[column for column in columns if column in display.columns]]
+
+    for column in ("data_source", "column"):
+        if column in display.columns:
+            display[column] = display[column].map(FEATURE_LABELS_TR).fillna(display[column])
+
+    if "scenario" in display.columns:
+        display["scenario"] = display["scenario"].map(scenario_label).fillna(display["scenario"])
+
+    if "inferred_frequency" in display.columns:
+        display["inferred_frequency"] = display["inferred_frequency"].map(FREQUENCY_LABELS_TR).fillna(
+            display["inferred_frequency"]
+        )
+
+    return display.rename(columns=COLUMN_LABELS_TR)
+
+
 def apply_streamlit_secrets_to_env() -> None:
     load_dotenv(ROOT / ".env")
     try:
@@ -232,7 +298,7 @@ metric_cols[3].metric("PTF Ortalama", format_number(summary.get("ptf_mean")))
 
 after_row = metrics.loc[metrics.get("scenario", pd.Series(dtype=str)).eq("after_14")]
 after_r2 = after_row["R2"].iloc[0] if not after_row.empty and "R2" in after_row else None
-metric_cols[4].metric("After 14 R2", format_number(after_r2, 3))
+metric_cols[4].metric("14:00 Sonrası R²", format_number(after_r2, 3))
 
 live_cols = st.columns(4)
 live_cols[0].metric("Çekilmeye Çalışılan", f"{summary.get('attempted_features', 0):,}")
@@ -263,8 +329,7 @@ with tab_overview:
     with right:
         st.subheader("Metrik Tablosu")
         if not metrics.empty:
-            display = metrics[["scenario", "feature_count", "MAE", "RMSE", "SMAPE", "R2"]].copy()
-            display["scenario"] = display["scenario"].map(scenario_label)
+            display = localized_dataframe(metrics, ["scenario", "feature_count", "MAE", "RMSE", "SMAPE", "R2"])
             st.dataframe(display, width="stretch", hide_index=True)
         else:
             st.info("Gösterilecek metrik yok.")
@@ -297,7 +362,11 @@ with tab_predictions:
         st.plotly_chart(fig, width="stretch")
 
         st.subheader("Tahmin Tablosu")
-        st.dataframe(rows.tail(96), width="stretch", hide_index=True)
+        st.dataframe(
+            localized_dataframe(rows.tail(96), ["target_datetime", "actual_ptf", "predicted_ptf", "absolute_error"]),
+            width="stretch",
+            hide_index=True,
+        )
     else:
         st.warning("Tahmin verisi bulunamadı.")
 
@@ -313,13 +382,13 @@ with tab_data:
                 "delay_text",
                 "forecast_usage_recommendation",
             ]
-            st.dataframe(latest[[column for column in columns if column in latest.columns]], width="stretch", hide_index=True)
+            st.dataframe(localized_dataframe(latest, columns), width="stretch", hide_index=True)
         else:
             st.info("Son yayın zamanı raporu bulunamadı.")
     with right:
         st.subheader("Eksik Veri Raporu")
         if not missing.empty:
             columns = ["column", "missing_count_before", "missing_count_after"]
-            st.dataframe(missing[[column for column in columns if column in missing.columns]], width="stretch", hide_index=True)
+            st.dataframe(localized_dataframe(missing, columns), width="stretch", hide_index=True)
         else:
             st.info("Eksik veri raporu bulunamadı.")
