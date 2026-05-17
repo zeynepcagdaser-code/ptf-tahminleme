@@ -82,7 +82,6 @@ st.set_page_config(
 )
 
 
-@st.cache_data(show_spinner=False)
 def load_snapshot_dashboard_data() -> dict:
     if APP_DATA_PATH.exists():
         return json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
@@ -308,6 +307,9 @@ metrics = pd.DataFrame(data.get("metrics", []))
 latest = pd.DataFrame(data.get("latest_available", []))
 missing = pd.DataFrame(data.get("missing_report", []))
 final_dataset = pd.DataFrame(data.get("final_dataset", []))
+if final_dataset.empty and APP_DATA_PATH.exists():
+    fresh_snapshot = json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
+    final_dataset = pd.DataFrame(fresh_snapshot.get("final_dataset", []))
 
 st.caption(
     "D+2 PTF tahmini paneli. Sayfa hızlı açılır; EPİAŞ canlı veri çekimi yan menüdeki butonla başlatılır."
