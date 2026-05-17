@@ -47,6 +47,22 @@ COLUMN_LABELS_TR = {
     "delay_text": "Gecikme",
     "forecast_usage_recommendation": "Tahminde Kullanım Önerisi",
     "column": "Kolon",
+    "datetime": "Tarih/Saat",
+    "date": "Tarih",
+    "hour": "Saat",
+    "ptf": "PTF",
+    "gop_fiyattan_bagimsiz_alis": "GÖP Fiyattan Bağımsız Alış",
+    "gop_fiyattan_bagimsiz_satis": "GÖP Fiyattan Bağımsız Satış",
+    "price_independent_buy_sell_ratio": "Fiyattan Bağımsız Alış/Satış Oranı",
+    "load_forecast_plan": "Yük Tahmin Planı",
+    "wind_generation": "Rüzgar Üretimi",
+    "solar_generation": "Güneş Üretimi",
+    "hydro_dam_generation": "Barajlı Hidro Üretimi",
+    "real_time_consumption": "Gerçek Zamanlı Tüketim",
+    "grf_tl": "Günlük Referans Fiyatı TL",
+    "unlicensed_generation_total": "Lisanssız Üretim Toplamı",
+    "smf": "SMF",
+    "usd_try": "USD/TRY",
     "missing_count_before": "Doldurma Öncesi Eksik Sayısı",
     "missing_count_after": "Doldurma Sonrası Eksik Sayısı",
 }
@@ -110,6 +126,7 @@ def load_live_dashboard_data() -> dict:
         "metrics": snapshot.get("metrics", []),
         "latest_available": latest_report.to_dict(orient="records"),
         "missing_report": missing_report.to_dict(orient="records"),
+        "final_dataset": final_dataset_records(final_dataset),
         "predictions": snapshot.get("predictions", {}),
     }
 
@@ -123,6 +140,7 @@ def build_from_local_processed() -> dict:
     latest = read_csv("latest_available_times_report.csv")
     missing = read_csv("final_dataset_missing_report.csv")
     final = read_csv("final_hourly_dataset.csv", usecols=["datetime", "ptf"])
+    final_full = read_csv("final_hourly_dataset.csv")
     before = read_csv("d_plus_2_before_14_predictions.csv")
     after = read_csv("d_plus_2_after_14_predictions.csv")
 
@@ -145,6 +163,7 @@ def build_from_local_processed() -> dict:
         "metrics": metrics.to_dict(orient="records"),
         "latest_available": latest.to_dict(orient="records"),
         "missing_report": missing.to_dict(orient="records"),
+        "final_dataset": final_dataset_records(final_full),
         "predictions": {
             "before_14": prediction_records(before),
             "after_14": prediction_records(after),
@@ -178,6 +197,15 @@ def prediction_records(frame: pd.DataFrame, limit: int = 336) -> list[dict]:
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame.to_dict(orient="records")
+
+
+def final_dataset_records(frame: pd.DataFrame, limit: int = 5000) -> list[dict]:
+    if frame.empty:
+        return []
+    display = frame.tail(limit).copy()
+    if "datetime" in display.columns:
+        display["datetime"] = pd.to_datetime(display["datetime"], errors="coerce").astype(str)
+    return display.to_dict(orient="records")
 
 
 def format_number(value, digits: int = 2) -> str:
@@ -280,6 +308,7 @@ summary = data.get("summary", {})
 metrics = pd.DataFrame(data.get("metrics", []))
 latest = pd.DataFrame(data.get("latest_available", []))
 missing = pd.DataFrame(data.get("missing_report", []))
+final_dataset = pd.DataFrame(data.get("final_dataset", []))
 
 st.caption(
     "D+2 PTF tahmini paneli. Canlı modda EPİAŞ verisi çekilir; model metrikleri son eğitilmiş snapshot'tan gösterilir."
@@ -306,7 +335,7 @@ live_cols[1].metric("Başarılı Veri", f"{summary.get('successful_features', 0)
 live_cols[2].metric("Başarısız Veri", f"{summary.get('failed_features', 0):,}")
 live_cols[3].metric("USD/GRF Yayılım", "Tamam" if summary.get("usd_daily_broadcast") or summary.get("grf_daily_broadcast") else "-")
 
-tab_overview, tab_predictions, tab_data = st.tabs(["Performans", "Tahminler", "Veri Durumu"])
+tab_overview, tab_predictions, tab_data, tab_dataset = st.tabs(["Performans", "Tahminler", "Veri Durumu", "Veriler"])
 
 with tab_overview:
     left, right = st.columns([1.25, 1])
@@ -392,3 +421,26 @@ with tab_data:
             st.dataframe(localized_dataframe(missing, columns), width="stretch", hide_index=True)
         else:
             st.info("Eksik veri raporu bulunamadı.")
+
+with tab_dataset:
+    st.subheader("Çekilen ve Saatlik Hizalanan Veriler")
+    if not final_dataset.empty:
+        search = st.text_input("Kolonlarda ara", placeholder="Örn: PTF, üretim, tüketim, USD")
+        display_dataset = final_dataset.copy()
+
+        if search.strip():
+            query = search.strip().lower()
+            matching_columns = [
+                column
+                for column in display_dataset.columns
+                if query in column.lower() or query in COLUMN_LABELS_TR.get(column, "").lower()
+            ]
+            base_columns = [column for column in ["datetime", "date", "hour", "ptf"] if column in display_dataset.columns]
+            selected_columns = list(dict.fromkeys(base_columns + matching_columns))
+            if selected_columns:
+                display_dataset = display_dataset[selected_columns]
+
+        st.caption(f"Gösterilen satır sayısı: {len(display_dataset):,}")
+        st.dataframe(localized_dataframe(display_dataset), width="stretch", hide_index=True)
+    else:
+        st.info("Final veri seti bulunamadı.")
