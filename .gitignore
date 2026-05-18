@@ -7,6 +7,12 @@ data/raw/
 data/models/
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/final_hourly_dataset.csv
+!data/processed/ptf_12h_final_predictions.csv
+!data/processed/ptf_12h_final_metrics.json
+!data/processed/ptf_12h_final_horizon_metrics.csv
+!data/processed/ptf_12h_horizon_metrics.csv
+!data/processed/ptf_12h_live_forecast.csv
 catboost_info/
 *.pkl
 *.cbm

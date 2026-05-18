@@ -16,10 +16,12 @@ from src.config import PROJECT_ROOT
 ROOT = Path(__file__).resolve().parent
 PROCESSED = ROOT / "data" / "processed"
 APP_DATA_PATH = ROOT / "app_data" / "dashboard_data.json"
+FINAL_DATASET_PATH = PROCESSED / "final_hourly_dataset.csv"
 FINAL_METRICS_PATH = PROCESSED / "ptf_12h_final_metrics.json"
 FINAL_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
 FINAL_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
 BASELINE_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_horizon_metrics.csv"
+LIVE_FORECAST_PATH = PROCESSED / "ptf_12h_live_forecast.csv"
 
 
 st.set_page_config(
@@ -106,6 +108,84 @@ def fmt_pct(value, digits: int = 1) -> str:
     return f"{float(value):+.{digits}f}%"
 
 
+def _coerce_datetime_col(df: pd.DataFrame, col: str = "datetime") -> pd.DataFrame:
+    if df.empty or col not in df.columns:
+        return df
+    out = df.copy()
+    out[col] = pd.to_datetime(out[col], errors="coerce")
+    return out
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_final_dataset() -> pd.DataFrame:
+    if not FINAL_DATASET_PATH.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(FINAL_DATASET_PATH)
+    df = _coerce_datetime_col(df, "datetime")
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    return df
+
+
+def build_naive_live_forecast(final_df: pd.DataFrame, horizons: int = 12) -> pd.DataFrame:
+    """
+    Snapshot yoksa canlı tahmini panel içinde hızlıca üretmek için basit bir baseline.
+    Yalnızca mevcut PTF geçmişini kullanır.
+    """
+    if final_df.empty or "datetime" not in final_df.columns or "ptf" not in final_df.columns:
+        return pd.DataFrame()
+    df = final_df.dropna(subset=["datetime", "ptf"]).sort_values("datetime").copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    cutoff_dt = df["datetime"].max()
+    last_24 = df.tail(24)["ptf"].mean() if len(df) >= 24 else df["ptf"].mean()
+
+    preds: list[dict] = []
+    for h in range(1, horizons + 1):
+        target_dt = cutoff_dt + pd.Timedelta(hours=h)
+
+        y_dt = target_dt - pd.Timedelta(hours=24)
+        w_dt = target_dt - pd.Timedelta(hours=168)
+        y_val = df.loc[df["datetime"] == y_dt, "ptf"]
+        w_val = df.loc[df["datetime"] == w_dt, "ptf"]
+        y_ptf = float(y_val.iloc[0]) if len(y_val) else None
+        w_ptf = float(w_val.iloc[0]) if len(w_val) else None
+
+        parts = [float(last_24)]
+        weights = [0.45]
+        if y_ptf is not None:
+            parts.append(y_ptf)
+            weights.append(0.35)
+        if w_ptf is not None:
+            parts.append(w_ptf)
+            weights.append(0.20)
+
+        wsum = sum(weights)
+        pred = sum(p * w for p, w in zip(parts, weights)) / wsum if wsum else float(last_24)
+
+        preds.append(
+            {
+                "forecast_horizon": h,
+                "target_datetime": target_dt,
+                "predicted_ptf": pred,
+                "model_name": "baseline_panel",
+            }
+        )
+
+    return pd.DataFrame(preds)
+
+
+def load_live_forecast_csv() -> pd.DataFrame:
+    df = read_csv(LIVE_FORECAST_PATH)
+    if df.empty:
+        return df
+    for c in ("issue_datetime", "target_datetime"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def run_live_update() -> dict:
     from src.run_ptf_pipeline import run_full_ptf_pipeline
@@ -124,7 +204,7 @@ with st.sidebar:
     st.markdown("### 📊 Görünüm Modu")
     view_mode = st.radio(
         "Seçiniz",
-        ["Genel Bakış", "Ensemble Detayları", "Canlı Tahmin", "Performans Analizi"],
+        ["Genel Bakış", "Veriler", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
         label_visibility="collapsed"
     )
     
@@ -190,12 +270,14 @@ final_metrics = data
 final_preds = load_final_predictions()
 final_horizon = load_final_horizon_metrics()
 baseline_horizon = load_baseline_horizon_metrics()
+final_dataset = load_final_dataset()
 
 # Load dashboard data for live forecast
 if APP_DATA_PATH.exists():
     dashboard_data = json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
     live_df = pd.DataFrame(dashboard_data.get("live_forecast", []))
 else:
+    dashboard_data = {}
     live_df = pd.DataFrame()
 
 
@@ -270,6 +352,19 @@ if view_mode == "Genel Bakış":
                 delta_color="normal" if r2_imp > 0 else "inverse"
             )
             st.caption(f"Baseline: {baseline_r2:.4f}")
+
+        with st.expander("Baseline Comparison (CatBoost) vs Final Ensemble", expanded=False):
+            comp = pd.DataFrame(
+                [
+                    {"Model": "Baseline (CatBoost)", "MAE": baseline_mae, "RMSE": baseline_rmse, "SMAPE": baseline_smape, "R2": baseline_r2},
+                    {"Model": "Final (Ensemble)", "MAE": final_mae, "RMSE": final_rmse, "SMAPE": final_smape, "R2": final_r2},
+                ]
+            )
+            st.dataframe(
+                comp.style.format({"MAE": "{:.2f}", "RMSE": "{:.2f}", "SMAPE": "{:.2f}", "R2": "{:.4f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
         
         st.markdown("---")
         
@@ -282,10 +377,94 @@ if view_mode == "Genel Bakış":
         with col3:
             if dashboard_data:
                 st.info(f"🕐 **Son Güncelleme:** {dashboard_data.get('generated_at', '-')[:16]}")
+
+        st.markdown("---")
+        st.markdown("### 📉 Gerçek vs Tahmin (Final Ensemble)")
+        if final_preds.empty:
+            st.warning("Final ensemble tahmin dosyası bulunamadı (`data/processed/ptf_12h_final_predictions.csv`).")
+        else:
+            preds = final_preds.copy()
+            preds["target_datetime"] = pd.to_datetime(preds.get("target_datetime"), errors="coerce")
+            preds = preds.dropna(subset=["target_datetime", "ptf_target", "final_predicted_ptf"])
+            if preds.empty:
+                st.warning("Final tahmin dosyasında çizim için yeterli veri yok.")
+            else:
+                horizon_sel = st.selectbox("Horizon (saat)", options=list(range(1, 13)), index=0)
+                view_days = st.slider("Görüntülenecek gün", min_value=3, max_value=60, value=14, step=1)
+                preds = preds[preds["forecast_horizon"] == int(horizon_sel)].sort_values("target_datetime")
+                end_dt = preds["target_datetime"].max()
+                start_dt = end_dt - pd.Timedelta(days=int(view_days))
+                preds = preds[preds["target_datetime"] >= start_dt]
+
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Scatter(
+                        x=preds["target_datetime"],
+                        y=preds["ptf_target"],
+                        mode="lines",
+                        name="Gerçek PTF",
+                        line=dict(color="#0f172a", width=2),
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=preds["target_datetime"],
+                        y=preds["final_predicted_ptf"],
+                        mode="lines",
+                        name="Final Tahmin",
+                        line=dict(color="#10b981", width=2),
+                    )
+                )
+                fig.update_layout(
+                    height=460,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig, use_container_width=True)
     
     else:
         st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
         st.code("python -c 'from src.build_final_ensemble import build_final_ensemble; build_final_ensemble()'")
+
+
+# --- Data Section ---
+elif view_mode == "Veriler":
+    st.markdown("## 🗂️ Veriler")
+    st.caption("Bu sayfa, panelin kullandığı son `final_hourly_dataset.csv` verisini gösterir.")
+
+    if final_dataset.empty:
+        st.error("Final veriseti bulunamadı (`data/processed/final_hourly_dataset.csv`).")
+        st.markdown("Panel içinde canlı veri çekip dataset üretmek için sol menüden **Veriyi Güncelle** butonunu kullanın.")
+    else:
+        st.success(
+            f"Yüklendi: {len(final_dataset):,} satır, {final_dataset.shape[1]} kolon | "
+            f"Aralık: {final_dataset['datetime'].min()} → {final_dataset['datetime'].max()}"
+        )
+
+        st.markdown("### Son Kayıtlar")
+        n = st.slider("Gösterilecek satır sayısı", min_value=50, max_value=5000, value=500, step=50)
+        df_tail = final_dataset.sort_values("datetime").tail(int(n)).copy()
+        st.dataframe(df_tail, use_container_width=True, hide_index=True)
+
+        st.markdown("### PTF Grafiği (Son 7 Gün)")
+        df_plot = final_dataset.dropna(subset=["datetime", "ptf"]).sort_values("datetime").copy()
+        if not df_plot.empty:
+            end_dt = df_plot["datetime"].max()
+            start_dt = end_dt - pd.Timedelta(days=7)
+            df_plot = df_plot[df_plot["datetime"] >= start_dt]
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=df_plot["datetime"],
+                    y=df_plot["ptf"],
+                    mode="lines",
+                    name="PTF",
+                    line=dict(color="#0ea5e9", width=2),
+                )
+            )
+            fig.update_layout(height=420, margin=dict(l=20, r=20, t=30, b=20))
+            st.plotly_chart(fig, use_container_width=True)
 
 
 # --- Ensemble Details Section ---
@@ -359,30 +538,50 @@ elif view_mode == "Ensemble Detayları":
 elif view_mode == "Canlı Tahmin":
     st.markdown("## 🔮 Canlı 12 Saat Tahmini")
     
+    # 1) Snapshot (app_data) varsa onu oku; bazen tek satir gelebiliyor.
     if not live_df.empty:
+        for c in ("issue_datetime", "target_datetime"):
+            if c in live_df.columns:
+                live_df[c] = pd.to_datetime(live_df[c], errors="coerce")
+        live_df = live_df.sort_values("forecast_horizon")
+
+    # 2) Snapshot bos veya eksikse (12 satirdan az), processed live forecast'tan tamamla.
+    if live_df.empty or len(live_df) < 12:
+        fallback = load_live_forecast_csv()
+        if not fallback.empty and "issue_datetime" in fallback.columns:
+            latest_issue = fallback["issue_datetime"].max()
+            fallback = fallback[fallback["issue_datetime"] == latest_issue].copy()
+            fallback = fallback.sort_values("forecast_horizon")
+            if len(fallback) >= 12:
+                live_df = fallback.head(12).copy()
+
+    if not live_df.empty:
+        cutoff_display = None
+        if dashboard_data and dashboard_data.get("cutoff_datetime"):
+            cutoff_display = dashboard_data.get("cutoff_datetime")
+        elif "issue_datetime" in live_df.columns and not live_df["issue_datetime"].isna().all():
+            cutoff_display = str(live_df["issue_datetime"].max())
+        if cutoff_display:
+            st.info(f"🕐 **Tahmin Başlangıcı:** {cutoff_display}")
+
         live_df["target_datetime"] = pd.to_datetime(live_df["target_datetime"], errors="coerce")
         live_df = live_df.sort_values("forecast_horizon")
-        
-        # Cutoff info
-        if dashboard_data:
-            st.info(f"🕐 **Tahmin Başlangıcı:** {dashboard_data.get('cutoff_datetime', '-')}")
-        
-        # Chart
+
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
                 x=live_df["target_datetime"],
                 y=live_df["predicted_ptf"],
                 mode="lines+markers",
-                name="Tahmin PTF",
+                name="Final Tahmin (Ensemble)",
                 line=dict(color="#0ea5e9", width=3),
                 marker=dict(size=10),
-                fill='tozeroy',
-                fillcolor='rgba(14, 165, 233, 0.1)'
+                fill="tozeroy",
+                fillcolor="rgba(14, 165, 233, 0.1)",
             )
         )
         fig.update_layout(
-            title="Gelecek 12 Saat - Tahmin Edilen Kesinleşmiş PTF (MCP)",
+            title="Latest Issue - Gelecek 12 Saat Tahmin (Final Ensemble)",
             yaxis_title="PTF (TL/MWh)",
             xaxis_title="Saat",
             hovermode="x unified",
@@ -390,8 +589,7 @@ elif view_mode == "Canlı Tahmin":
             margin=dict(l=20, r=20, t=50, b=20),
         )
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Table
+
         table = live_df.rename(
             columns={
                 "forecast_horizon": "Saat (+)",
@@ -399,10 +597,55 @@ elif view_mode == "Canlı Tahmin":
                 "predicted_ptf": "Tahmin PTF (TL)",
             }
         )[["Saat (+)", "Hedef Zaman", "Tahmin PTF (TL)"]]
-        st.dataframe(table.style.format({"Tahmin PTF (TL)": "{:.2f}"}), use_container_width=True, hide_index=True)
+        st.dataframe(
+            table.style.format({"Tahmin PTF (TL)": "{:.2f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
-        st.warning("⚠️ Canlı tahmin verisi yok. Dashboard snapshot'ı güncelleyin:")
-        st.code("python scripts/update_dashboard_snapshot.py")
+        if final_dataset.empty:
+            st.warning("⚠️ Canlı tahmin için gerekli veriler yok. Önce **Veriyi Güncelle** ile veri çekin.")
+        else:
+            st.info("Snapshot bulunamadı. Panel içinde hızlı bir baseline tahmin ürettim (model çalıştırmadan).")
+            naive = build_naive_live_forecast(final_dataset, horizons=12)
+            if naive.empty:
+                st.warning("Baseline tahmin üretilemedi.")
+            else:
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Scatter(
+                        x=naive["target_datetime"],
+                        y=naive["predicted_ptf"],
+                        mode="lines+markers",
+                        name="Tahmin (Baseline)",
+                        line=dict(color="#f97316", width=3),
+                        marker=dict(size=9),
+                        fill="tozeroy",
+                        fillcolor="rgba(249, 115, 22, 0.12)",
+                    )
+                )
+                fig.update_layout(
+                    title="Gelecek 12 Saat - Baseline Tahmin (Panel İçi)",
+                    yaxis_title="PTF (TL/MWh)",
+                    xaxis_title="Saat",
+                    hovermode="x unified",
+                    height=500,
+                    margin=dict(l=20, r=20, t=50, b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                table = naive.rename(
+                    columns={
+                        "forecast_horizon": "Saat (+)",
+                        "target_datetime": "Hedef Zaman",
+                        "predicted_ptf": "Tahmin PTF (TL)",
+                    }
+                )[["Saat (+)", "Hedef Zaman", "Tahmin PTF (TL)"]]
+                st.dataframe(
+                    table.style.format({"Tahmin PTF (TL)": "{:.2f}"}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 
 # --- Performance Analysis Section ---
