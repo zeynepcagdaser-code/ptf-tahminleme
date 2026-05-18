@@ -186,6 +186,39 @@ def load_live_forecast_csv() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_final_predictions_prepared() -> pd.DataFrame:
+    """
+    Final ensemble tahmin dosyasini dashboard icin standardize eder.
+    - actual_ptf: gercek hedef PTF (csv'de ptf_target)
+    - predicted_ptf: final ensemble tahmini (csv'de final_predicted_ptf)
+    """
+    df = load_final_predictions()
+    if df.empty:
+        return df
+
+    out = df.copy()
+    for c in ("issue_datetime", "target_datetime"):
+        if c in out.columns:
+            out[c] = pd.to_datetime(out[c], errors="coerce")
+
+    if "forecast_horizon" in out.columns:
+        out["forecast_horizon"] = pd.to_numeric(out["forecast_horizon"], errors="coerce")
+
+    if "ptf_target" in out.columns and "actual_ptf" not in out.columns:
+        out = out.rename(columns={"ptf_target": "actual_ptf"})
+    if "final_predicted_ptf" in out.columns and "predicted_ptf" not in out.columns:
+        out = out.rename(columns={"final_predicted_ptf": "predicted_ptf"})
+
+    needed = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
+    if not needed.issubset(set(out.columns)):
+        return df
+
+    out = out.dropna(subset=["target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"]).copy()
+    out["absolute_error"] = (out["predicted_ptf"] - out["actual_ptf"]).abs()
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def run_live_update() -> dict:
     from src.run_ptf_pipeline import run_full_ptf_pipeline
@@ -267,7 +300,7 @@ else:
 
 # Load data
 final_metrics = data
-final_preds = load_final_predictions()
+final_preds = load_final_predictions_prepared()
 final_horizon = load_final_horizon_metrics()
 baseline_horizon = load_baseline_horizon_metrics()
 final_dataset = load_final_dataset()
@@ -384,44 +417,52 @@ if view_mode == "Genel Bakış":
             st.warning("Final ensemble tahmin dosyası bulunamadı (`data/processed/ptf_12h_final_predictions.csv`).")
         else:
             preds = final_preds.copy()
-            preds["target_datetime"] = pd.to_datetime(preds.get("target_datetime"), errors="coerce")
-            preds = preds.dropna(subset=["target_datetime", "ptf_target", "final_predicted_ptf"])
-            if preds.empty:
-                st.warning("Final tahmin dosyasında çizim için yeterli veri yok.")
+            required = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
+            if not required.issubset(set(preds.columns)):
+                st.error("Final tahmin dosyası formatı beklenen gibi değil. Beklenen kolonlar: " + ", ".join(sorted(required)))
             else:
                 horizon_sel = st.selectbox("Horizon (saat)", options=list(range(1, 13)), index=0)
                 view_days = st.slider("Görüntülenecek gün", min_value=3, max_value=60, value=14, step=1)
-                preds = preds[preds["forecast_horizon"] == int(horizon_sel)].sort_values("target_datetime")
-                end_dt = preds["target_datetime"].max()
-                start_dt = end_dt - pd.Timedelta(days=int(view_days))
-                preds = preds[preds["target_datetime"] >= start_dt]
 
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=preds["target_datetime"],
-                        y=preds["ptf_target"],
-                        mode="lines",
-                        name="Gerçek PTF",
-                        line=dict(color="#0f172a", width=2),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=preds["target_datetime"],
-                        y=preds["final_predicted_ptf"],
-                        mode="lines",
-                        name="Final Tahmin",
-                        line=dict(color="#10b981", width=2),
-                    )
-                )
-                fig.update_layout(
-                    height=460,
-                    margin=dict(l=20, r=20, t=30, b=20),
-                    hovermode="x unified",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                preds = preds[preds["forecast_horizon"] == int(horizon_sel)].sort_values("target_datetime")
+                if preds.empty:
+                    st.warning("Bu horizon için tahmin verisi bulunamadı.")
+                else:
+                    end_dt = preds["target_datetime"].max()
+                    start_dt = end_dt - pd.Timedelta(days=int(view_days))
+                    preds = preds[preds["target_datetime"] >= start_dt]
+                    if preds.empty:
+                        st.warning("Seçilen gün aralığında veri yok. Gün sayısını artırmayı deneyin.")
+                    else:
+                        mae_slice = float((preds["predicted_ptf"] - preds["actual_ptf"]).abs().mean())
+                        st.caption(f"Seçili aralık MAE (h={horizon_sel}): {mae_slice:,.2f} TL/MWh | Nokta sayısı: {len(preds):,}")
+
+                        fig = go.Figure()
+                        fig.add_trace(
+                            go.Scatter(
+                                x=preds["target_datetime"],
+                                y=preds["actual_ptf"],
+                                mode="lines",
+                                name="Gerçek PTF",
+                                line=dict(color="#0f172a", width=2),
+                            )
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=preds["target_datetime"],
+                                y=preds["predicted_ptf"],
+                                mode="lines",
+                                name="Final Tahmin (Ensemble)",
+                                line=dict(color="#10b981", width=2),
+                            )
+                        )
+                        fig.update_layout(
+                            height=460,
+                            margin=dict(l=20, r=20, t=30, b=20),
+                            hovermode="x unified",
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
     
     else:
         st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
