@@ -13,9 +13,9 @@ INPUT_PATH = PROJECT_ROOT / "data" / "processed" / "final_hourly_dataset.csv"
 BEFORE_14_PATH = PROJECT_ROOT / "data" / "processed" / "d_plus_2_before_14_dataset.csv"
 AFTER_14_PATH = PROJECT_ROOT / "data" / "processed" / "d_plus_2_after_14_dataset.csv"
 
-CUTOFF_HOUR = 13
-TARGET_OFFSET_DAYS = 2
-D_PLUS_1_OFFSET_DAYS = 1
+CUTOFF_HOUR = 14
+BEFORE_TARGET_OFFSET_DAYS = 2
+AFTER_TARGET_OFFSET_DAYS = 1
 
 LAG_COLUMNS = [
     "ptf",
@@ -54,31 +54,73 @@ def build_d_plus_2_forecast_datasets() -> tuple[pd.DataFrame, pd.DataFrame, DPlu
     after_rows: list[dict[str, float | int | str | pd.Timestamp]] = []
 
     for issue_date in available_dates:
-        target_date = issue_date + pd.Timedelta(days=TARGET_OFFSET_DAYS)
-        d_plus_1_date = issue_date + pd.Timedelta(days=D_PLUS_1_OFFSET_DAYS)
+        target_date = issue_date + pd.Timedelta(days=BEFORE_TARGET_OFFSET_DAYS)
         cutoff_datetime = pd.Timestamp.combine(issue_date.date(), time(CUTOFF_HOUR, 0))
 
         if cutoff_datetime not in by_datetime.index:
             continue
 
-        d_plus_1_profile = _d_plus_1_profile(by_datetime, d_plus_1_date)
         for target_hour in range(24):
             target_datetime = pd.Timestamp.combine(target_date.date(), time(target_hour, 0))
             if target_datetime not in by_datetime.index:
                 continue
 
-            base_row = _base_row(by_datetime, issue_date, target_date, target_hour, target_datetime, cutoff_datetime)
+            base_row = _base_row(
+                by_datetime,
+                issue_date,
+                target_date,
+                target_hour,
+                target_datetime,
+                cutoff_datetime,
+            )
             if base_row is None:
                 continue
 
-            before_rows.append(base_row.copy())
-            if d_plus_1_profile is not None:
-                after_row = base_row.copy()
-                after_row.update(_d_plus_1_features(d_plus_1_profile, target_hour))
-                after_rows.append(after_row)
+            before_rows.append(base_row)
 
-    before = pd.DataFrame(before_rows).replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
-    after = pd.DataFrame(after_rows).replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
+    for issue_date in available_dates:
+        target_date = issue_date + pd.Timedelta(days=AFTER_TARGET_OFFSET_DAYS)
+        cutoff_datetime = pd.Timestamp.combine(issue_date.date(), time(CUTOFF_HOUR, 0))
+
+        if cutoff_datetime not in by_datetime.index:
+            continue
+
+        issue_day_profile = _issue_day_partial_ptf_profile(by_datetime, issue_date, CUTOFF_HOUR)
+        if issue_day_profile is None:
+            continue
+
+        for target_hour in range(24):
+            target_datetime = pd.Timestamp.combine(target_date.date(), time(target_hour, 0))
+            if target_datetime not in by_datetime.index:
+                continue
+
+            base_row = _base_row(
+                by_datetime,
+                issue_date,
+                target_date,
+                target_hour,
+                target_datetime,
+                cutoff_datetime,
+            )
+            if base_row is None:
+                continue
+
+            after_row = base_row.copy()
+            after_row.update(_issue_day_partial_ptf_features(issue_day_profile, target_hour))
+            after_rows.append(after_row)
+
+    before = (
+        pd.DataFrame(before_rows)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=["ptf_target"])
+        .reset_index(drop=True)
+    )
+    after = (
+        pd.DataFrame(after_rows)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=["ptf_target"])
+        .reset_index(drop=True)
+    )
 
     BEFORE_14_PATH.parent.mkdir(parents=True, exist_ok=True)
     before.to_csv(BEFORE_14_PATH, index=False)
@@ -166,49 +208,131 @@ def _base_row(
 
     row["grf_tl_issue_day"] = _last_known_value(by_datetime, cutoff_datetime, "grf_tl")
     row["usd_try_issue_day"] = _last_known_value(by_datetime, cutoff_datetime, "usd_try")
-    row["load_forecast_plan_target_hour"] = _load_forecast_value(by_datetime, target_datetime, cutoff_datetime)
-
+    row["load_forecast_plan_at_cutoff"] = _load_forecast_value(by_datetime, cutoff_datetime)
+    row.update(_ptf_cutoff_window_stats(by_datetime, cutoff_datetime))
+    row.update(_derived_cutoff_features(row))
     row.update(_target_calendar_features(target_datetime))
     return row
 
 
-def _d_plus_1_profile(by_datetime: pd.DataFrame, d_plus_1_date: pd.Timestamp) -> pd.Series | None:
-    start = pd.Timestamp.combine(d_plus_1_date.date(), time(0, 0))
-    hours = [start + pd.Timedelta(hours=hour) for hour in range(24)]
-    if not set(hours).issubset(by_datetime.index):
+def _issue_day_partial_ptf_profile(
+    by_datetime: pd.DataFrame,
+    issue_date: pd.Timestamp,
+    cutoff_hour: int,
+) -> pd.Series | None:
+    hours = [
+        pd.Timestamp.combine(issue_date.date(), time(hour, 0))
+        for hour in range(cutoff_hour)
+    ]
+    if not hours or not set(hours).issubset(by_datetime.index):
         return None
+
     profile = by_datetime.loc[hours, "ptf"].reset_index(drop=True)
-    if profile.isna().any() or len(profile) != 24:
+    if profile.isna().any() or len(profile) != len(hours):
         return None
     return profile
 
 
-def _d_plus_1_features(profile: pd.Series, target_hour: int) -> dict[str, float]:
-    features = {f"d_plus_1_ptf_hour_{hour:02d}": float(profile.iloc[hour]) for hour in range(24)}
-    evening_peak = profile.iloc[[18, 19, 20, 21, 22]]
-    daytime = profile.iloc[list(range(8, 18))]
+def _issue_day_partial_ptf_features(profile: pd.Series, target_hour: int) -> dict[str, float]:
+    features = {
+        f"issue_day_ptf_hour_{hour:02d}": float(profile.iloc[hour])
+        for hour in range(len(profile))
+    }
+
+    if profile.empty:
+        return features
+
+    night_hours = [hour for hour in range(0, 6) if hour < len(profile)]
+    morning_hours = [hour for hour in range(6, 12) if hour < len(profile)]
+    midday_hours = [hour for hour in range(12, len(profile))]
+
+    same_hour_value = float(profile.iloc[target_hour]) if target_hour < len(profile) else np.nan
     features.update(
         {
-            "d_plus_1_ptf_same_target_hour": float(profile.iloc[target_hour]),
-            "d_plus_1_ptf_daily_mean": float(profile.mean()),
-            "d_plus_1_ptf_daily_max": float(profile.max()),
-            "d_plus_1_ptf_daily_min": float(profile.min()),
-            "d_plus_1_ptf_daily_volatility": float(profile.std()),
-            "d_plus_1_ptf_evening_peak_mean": float(evening_peak.mean()),
-            "d_plus_1_ptf_daytime_mean": float(daytime.mean()),
+            "issue_day_ptf_same_target_hour": same_hour_value,
+            "issue_day_ptf_partial_mean": float(profile.mean()),
+            "issue_day_ptf_partial_max": float(profile.max()),
+            "issue_day_ptf_partial_min": float(profile.min()),
+            "issue_day_ptf_partial_volatility": float(profile.std()),
+            "issue_day_ptf_night_mean": float(profile.iloc[night_hours].mean()) if night_hours else np.nan,
+            "issue_day_ptf_morning_mean": float(profile.iloc[morning_hours].mean()) if morning_hours else np.nan,
+            "issue_day_ptf_midday_mean": float(profile.iloc[midday_hours].mean()) if midday_hours else np.nan,
+            "issue_day_ptf_partial_range": float(profile.max() - profile.min()),
         }
     )
     return features
 
 
-def _load_forecast_value(
+def _ptf_cutoff_window_stats(
     by_datetime: pd.DataFrame,
-    target_datetime: pd.Timestamp,
     cutoff_datetime: pd.Timestamp,
-) -> float:
-    value = _value_at(by_datetime, target_datetime, "load_forecast_plan")
-    if not pd.isna(value):
+) -> dict[str, float]:
+    window_start = cutoff_datetime - pd.Timedelta(hours=23)
+    window = by_datetime.loc[
+        (by_datetime.index >= window_start) & (by_datetime.index <= cutoff_datetime),
+        "ptf",
+    ].dropna()
+    if len(window) < 6:
+        return {}
+
+    return {
+        "ptf_cutoff_window_mean_24h": float(window.mean()),
+        "ptf_cutoff_window_std_24h": float(window.std()),
+        "ptf_cutoff_window_max_24h": float(window.max()),
+        "ptf_cutoff_window_min_24h": float(window.min()),
+        "ptf_cutoff_window_range_24h": float(window.max() - window.min()),
+    }
+
+
+def _derived_cutoff_features(row: dict[str, float | int | str | pd.Timestamp]) -> dict[str, float]:
+    features: dict[str, float] = {}
+
+    ptf_1 = _numeric_or_nan(row.get("ptf_cutoff_lag_1"))
+    ptf_24 = _numeric_or_nan(row.get("ptf_cutoff_lag_24"))
+    ptf_168 = _numeric_or_nan(row.get("ptf_cutoff_lag_168"))
+    smf_1 = _numeric_or_nan(row.get("smf_cutoff_lag_1"))
+    load_fc = _numeric_or_nan(row.get("load_forecast_plan_at_cutoff"))
+    consumption_1 = _numeric_or_nan(row.get("real_time_consumption_cutoff_lag_1"))
+    wind_1 = _numeric_or_nan(row.get("wind_generation_cutoff_lag_1"))
+    solar_1 = _numeric_or_nan(row.get("solar_generation_cutoff_lag_1"))
+    hydro_1 = _numeric_or_nan(row.get("hydro_dam_generation_cutoff_lag_1"))
+
+    if not np.isnan(ptf_1) and not np.isnan(ptf_24):
+        features["ptf_momentum_cutoff_1_24"] = ptf_1 - ptf_24
+        features["ptf_ratio_cutoff_1_24"] = ptf_1 / max(ptf_24, 1.0)
+    if not np.isnan(ptf_24) and not np.isnan(ptf_168):
+        features["ptf_ratio_cutoff_24_168"] = ptf_24 / max(ptf_168, 1.0)
+    if not np.isnan(smf_1) and not np.isnan(ptf_1):
+        features["smf_ptf_spread_cutoff_lag_1"] = smf_1 - ptf_1
+    if not np.isnan(load_fc) and not np.isnan(consumption_1):
+        features["load_forecast_to_consumption_ratio"] = load_fc / max(consumption_1, 1.0)
+
+    renewable_parts = [value for value in (wind_1, solar_1, hydro_1) if not np.isnan(value)]
+    if renewable_parts:
+        features["renewable_generation_cutoff_lag_1"] = float(sum(renewable_parts))
+        if not np.isnan(consumption_1):
+            features["renewable_share_of_consumption"] = features["renewable_generation_cutoff_lag_1"] / max(
+                consumption_1,
+                1.0,
+            )
+
+    ptf_same_168 = _numeric_or_nan(row.get("ptf_same_hour_lag_168"))
+    if not np.isnan(ptf_same_168) and not np.isnan(ptf_24):
+        features["ptf_same_hour_vs_recent_day"] = ptf_same_168 - ptf_24
+
+    return features
+
+
+def _numeric_or_nan(value: object) -> float:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.nan
+    try:
         return float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def _load_forecast_value(by_datetime: pd.DataFrame, cutoff_datetime: pd.Timestamp) -> float:
     return _last_known_value(by_datetime, cutoff_datetime, "load_forecast_plan")
 
 

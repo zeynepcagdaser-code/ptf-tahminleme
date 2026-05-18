@@ -36,14 +36,14 @@ def fill_final_dataset_missing(dataset: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         if column not in indexed.columns or column == "ptf":
             continue
         indexed[column] = pd.to_numeric(indexed[column], errors="coerce")
-        indexed[column] = indexed[column].interpolate(method="time", limit_direction="both")
-        indexed[column] = indexed[column].ffill().bfill()
+        indexed[column] = indexed[column].interpolate(method="time", limit_direction="forward")
+        indexed[column] = indexed[column].ffill()
         indexed[column] = _fill_with_median(indexed[column])
 
     for column in DAILY_BROADCAST_COLUMNS:
         if column not in indexed.columns:
             continue
-        indexed[column] = pd.to_numeric(indexed[column], errors="coerce").ffill().bfill()
+        indexed[column] = pd.to_numeric(indexed[column], errors="coerce").ffill()
 
     if RATIO_COLUMN in indexed.columns:
         indexed[RATIO_COLUMN] = pd.to_numeric(indexed[RATIO_COLUMN], errors="coerce")

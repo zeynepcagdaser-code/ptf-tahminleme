@@ -11,6 +11,7 @@ from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.config import PROJECT_ROOT
+from src.model_splits import chronological_train_val_test_split, project_relative_path
 
 
 DATA_PATH = PROJECT_ROOT / "data" / "processed" / "forecast_24h_dataset.csv"
@@ -45,7 +46,7 @@ class Forecast24hTrainingResult:
 def train_catboost_24h_forecast() -> Forecast24hTrainingResult:
     data = _read_dataset()
     feature_columns = _feature_columns(data)
-    train_df, test_df = _chronological_split(data)
+    train_df, val_df, test_df = chronological_train_val_test_split(data)
 
     model = CatBoostRegressor(
         iterations=1500,
@@ -58,7 +59,7 @@ def train_catboost_24h_forecast() -> Forecast24hTrainingResult:
     model.fit(
         train_df[feature_columns],
         train_df[TARGET_COLUMN],
-        eval_set=(test_df[feature_columns], test_df[TARGET_COLUMN]),
+        eval_set=(val_df[feature_columns], val_df[TARGET_COLUMN]),
         use_best_model=True,
     )
 
@@ -117,10 +118,10 @@ def train_catboost_24h_forecast() -> Forecast24hTrainingResult:
         smape=metrics["SMAPE"],
         r2=metrics["R2"],
         top_features=top_features,
-        model_path=str(MODEL_PATH),
-        predictions_path=str(PREDICTIONS_PATH),
-        metrics_path=str(METRICS_PATH),
-        feature_importance_path=str(IMPORTANCE_PATH),
+        model_path=project_relative_path(MODEL_PATH),
+        predictions_path=project_relative_path(PREDICTIONS_PATH),
+        metrics_path=project_relative_path(METRICS_PATH),
+        feature_importance_path=project_relative_path(IMPORTANCE_PATH),
     )
 
 
@@ -155,13 +156,6 @@ def _feature_columns(data: pd.DataFrame) -> list[str]:
     if non_numeric:
         raise ValueError(f"Sayisal olmayan feature kolonlari var: {non_numeric}")
     return columns
-
-
-def _chronological_split(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    split_index = int(len(data) * 0.8)
-    if split_index <= 0 or split_index >= len(data):
-        raise ValueError("Kronolojik split icin yeterli veri yok.")
-    return data.iloc[:split_index].copy(), data.iloc[split_index:].copy()
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

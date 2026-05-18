@@ -1,43 +1,37 @@
 from __future__ import annotations
 
-from src.build_d_plus_2_forecast_datasets import build_d_plus_2_forecast_datasets
-from src.train_d_plus_2_catboost import train_d_plus_2_catboost_models
+import argparse
+
+from src.run_ptf_pipeline import run_full_ptf_pipeline
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="PTF 12 saatlik tahmin pipeline")
+    parser.add_argument(
+        "--fetch",
+        action="store_true",
+        help="EPİAŞ'tan canli veri cek (kimlik bilgisi gerekir)",
+    )
+    args = parser.parse_args()
+
     try:
-        before, after, dataset_summary = build_d_plus_2_forecast_datasets()
-        training_summary = train_d_plus_2_catboost_models()
+        result = run_full_ptf_pipeline(fetch_live=args.fetch)
 
-        print("\nD+2 PTF forecast dataset ozeti")
+        print("\nPTF 12 Saatlik Tahmin Pipeline")
         print("-" * 56)
-        print(f"Forecast issue date araligi : {dataset_summary.first_forecast_issue_date} -> {dataset_summary.last_forecast_issue_date}")
-        print(f"Before 14 dataset shape     : {before.shape}")
-        print(f"After 14 dataset shape      : {after.shape}")
-        print(f"Before 14 path              : {dataset_summary.before_path}")
-        print(f"After 14 path               : {dataset_summary.after_path}")
-
-        print("\nCatBoost D+2 performans karsilastirmasi")
-        print("-" * 56)
-        for metrics in [training_summary.before_metrics, training_summary.after_metrics]:
-            print(f"\nSenaryo: {metrics['scenario']}")
-            print(f"Rows       : {metrics['rows']:,}")
-            print(f"Features   : {metrics['feature_count']:,}")
-            print(f"Train rows : {metrics['train_rows']:,}")
-            print(f"Test rows  : {metrics['test_rows']:,}")
-            print(f"MAE        : {metrics['MAE']:,.4f}")
-            print(f"RMSE       : {metrics['RMSE']:,.4f}")
-            print(f"SMAPE      : {metrics['SMAPE']:,.4f}%")
-            print(f"R2         : {metrics['R2']:,.6f}")
-
+        print(f"Egitim ornek sayisi : {result['dataset_rows']:,}")
+        print(f"12 saat ort. MAE      : {result['mae']:,.2f} TL/MWh")
+        print(f"12 saat ort. RMSE     : {result['rmse']:,.2f} TL/MWh")
+        print(f"12 saat ort. SMAPE    : {result['smape']:,.2f}%")
+        print(f"12 saat ort. R2       : {result['r2']:,.4f}")
+        print(f"Ufuk metrikleri       : {result['horizon_metrics_path']}")
         print("\nCiktilar")
-        print(f"- {dataset_summary.before_path}")
-        print(f"- {dataset_summary.after_path}")
-        print(f"- {training_summary.before_predictions_path}")
-        print(f"- {training_summary.after_predictions_path}")
-        print(f"- {training_summary.comparison_path}")
+        print(f"- {result['dataset_path']}")
+        print(f"- {result['predictions_path']}")
+        print(f"- {result['live_forecast_path']}")
+        print("\nPanel: streamlit run streamlit_app.py")
     except Exception as exc:
-        print("\nD+2 forecast pipeline hatasi")
+        print("\nPipeline hatasi")
         print("-" * 56)
         print(exc)
         raise SystemExit(1) from exc

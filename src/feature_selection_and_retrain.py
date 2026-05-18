@@ -12,6 +12,7 @@ from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.config import PROJECT_ROOT
+from src.model_splits import chronological_train_val_test_split, project_relative_path
 
 
 FEATURE_DATASET_PATH = PROJECT_ROOT / "data" / "processed" / "final_feature_dataset.csv"
@@ -88,7 +89,7 @@ def run_feature_selection_and_retrain() -> SelectionRetrainResult:
     selected_dataset.to_csv(SELECTED_DATASET_PATH, index=False)
     _save_feature_lists(base_importance, selected_features, removed_features)
 
-    train_df, test_df = _chronological_split(selected_dataset)
+    train_df, val_df, test_df = chronological_train_val_test_split(selected_dataset)
     model = CatBoostRegressor(
         iterations=1500,
         learning_rate=0.02,
@@ -100,7 +101,7 @@ def run_feature_selection_and_retrain() -> SelectionRetrainResult:
     model.fit(
         train_df[selected_features],
         train_df[TARGET_COLUMN],
-        eval_set=(test_df[selected_features], test_df[TARGET_COLUMN]),
+        eval_set=(val_df[selected_features], val_df[TARGET_COLUMN]),
         use_best_model=True,
     )
 
@@ -158,13 +159,13 @@ def run_feature_selection_and_retrain() -> SelectionRetrainResult:
         smape=metrics["SMAPE"],
         r2=metrics["R2"],
         top_features=top_features,
-        selected_dataset_path=str(SELECTED_DATASET_PATH),
-        selected_feature_list_path=str(SELECTED_FEATURE_LIST_PATH),
-        removed_feature_list_path=str(REMOVED_FEATURE_LIST_PATH),
-        model_path=str(MODEL_PATH),
-        predictions_path=str(PREDICTIONS_PATH),
-        metrics_path=str(METRICS_PATH),
-        feature_importance_path=str(IMPORTANCE_PATH),
+        selected_dataset_path=project_relative_path(SELECTED_DATASET_PATH),
+        selected_feature_list_path=project_relative_path(SELECTED_FEATURE_LIST_PATH),
+        removed_feature_list_path=project_relative_path(REMOVED_FEATURE_LIST_PATH),
+        model_path=project_relative_path(MODEL_PATH),
+        predictions_path=project_relative_path(PREDICTIONS_PATH),
+        metrics_path=project_relative_path(METRICS_PATH),
+        feature_importance_path=project_relative_path(IMPORTANCE_PATH),
     )
 
 
@@ -336,11 +337,6 @@ def _save_feature_lists(
         REMOVED_FEATURE_LIST_PATH,
         index=False,
     )
-
-
-def _chronological_split(dataset: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    split_index = int(len(dataset) * 0.8)
-    return dataset.iloc[:split_index].copy(), dataset.iloc[split_index:].copy()
 
 
 def _calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

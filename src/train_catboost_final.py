@@ -12,6 +12,7 @@ from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.config import PROJECT_ROOT
+from src.model_splits import chronological_train_val_test_split, project_relative_path
 
 
 DATA_PATH = PROJECT_ROOT / "data" / "processed" / "final_feature_dataset.csv"
@@ -61,10 +62,12 @@ class CatBoostFinalResult:
 def run_catboost_final_training() -> CatBoostFinalResult:
     dataset = _read_dataset()
     feature_columns = _get_feature_columns(dataset)
-    train_df, test_df = _chronological_split(dataset)
+    train_df, val_df, test_df = chronological_train_val_test_split(dataset)
 
     x_train = train_df[feature_columns]
     y_train = train_df[TARGET_COLUMN]
+    x_val = val_df[feature_columns]
+    y_val = val_df[TARGET_COLUMN]
     x_test = test_df[feature_columns]
     y_test = test_df[TARGET_COLUMN]
 
@@ -76,7 +79,7 @@ def run_catboost_final_training() -> CatBoostFinalResult:
         random_seed=42,
         verbose=100,
     )
-    model.fit(x_train, y_train, eval_set=(x_test, y_test), use_best_model=True)
+    model.fit(x_train, y_train, eval_set=(x_val, y_val), use_best_model=True)
 
     predictions = model.predict(x_test)
     metrics = _calculate_metrics(y_test.to_numpy(), predictions)
@@ -134,10 +137,10 @@ def run_catboost_final_training() -> CatBoostFinalResult:
         smape=metrics["SMAPE"],
         r2=metrics["R2"],
         top_features=top_features,
-        model_path=str(MODEL_PATH),
-        predictions_path=str(PREDICTIONS_PATH),
-        metrics_path=str(METRICS_PATH),
-        feature_importance_path=str(IMPORTANCE_PATH),
+        model_path=project_relative_path(MODEL_PATH),
+        predictions_path=project_relative_path(PREDICTIONS_PATH),
+        metrics_path=project_relative_path(METRICS_PATH),
+        feature_importance_path=project_relative_path(IMPORTANCE_PATH),
     )
 
 
@@ -168,13 +171,6 @@ def _get_feature_columns(dataset: pd.DataFrame) -> list[str]:
     if TARGET_COLUMN in feature_columns:
         raise ValueError("Target ptf feature listesine girdi; bu veri sızıntısı olur.")
     return feature_columns
-
-
-def _chronological_split(dataset: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    split_index = int(len(dataset) * 0.8)
-    if split_index <= 0 or split_index >= len(dataset):
-        raise ValueError("Kronolojik train/test split icin yeterli veri yok.")
-    return dataset.iloc[:split_index].copy(), dataset.iloc[split_index:].copy()
 
 
 def _calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

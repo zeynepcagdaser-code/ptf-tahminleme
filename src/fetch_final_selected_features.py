@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 
 from src.config import PROJECT_ROOT, TIMEZONE, get_settings
-from src.epias_client import EpiasClient, extract_items, iter_monthly_ranges
+from src.epias_client import EpiasClient, extract_items, iter_daily_ranges, iter_monthly_ranges
 
 
 RAW_DIR = PROJECT_ROOT / "data" / "raw" / "final_selected_features"
@@ -28,6 +28,7 @@ class FinalFeatureSpec:
     output_file: str
     fallback_file: str | None = None
     sort_field: str = "date"
+    chunk_granularity: str = "monthly"
 
 
 @dataclass
@@ -42,11 +43,20 @@ class FetchResult:
 
 FINAL_EPIAS_FEATURES: tuple[FinalFeatureSpec, ...] = (
     FinalFeatureSpec(
-        "ptf",
+        "ptf_interim",
+        "electricity",
+        "/v1/markets/dam/data/interim-mcp",
+        "hourly",
+        "ptf_interim.csv",
+        None,
+        chunk_granularity="daily",
+    ),
+    FinalFeatureSpec(
+        "ptf_kesinlesmis",
         "electricity",
         "/v1/markets/dam/data/mcp",
         "hourly",
-        "ptf.csv",
+        "ptf_kesinlesmis.csv",
         None,
     ),
     FinalFeatureSpec(
@@ -182,7 +192,12 @@ class FinalSelectedFeatureFetcher:
 
         print(f"[FETCH] {spec.feature_name}")
 
-        for chunk_start, chunk_end in iter_monthly_ranges(self.start_date, self.end_date):
+        date_ranges = (
+            iter_daily_ranges(self.start_date, self.end_date)
+            if spec.chunk_granularity == "daily"
+            else iter_monthly_ranges(self.start_date, self.end_date)
+        )
+        for chunk_start, chunk_end in date_ranges:
             try:
                 items = self._request_epias_chunk_with_backoff_window(spec, chunk_start, chunk_end)
                 if items:

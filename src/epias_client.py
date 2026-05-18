@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -132,6 +132,18 @@ class EpiasClient:
             )
 
         raise EpiasApiError(f"EPİAŞ API hatası. HTTP {response.status_code}: {message}")
+
+
+def iter_daily_ranges(start_date: date, end_date: date) -> list[tuple[date, date]]:
+    if start_date > end_date:
+        raise ValueError("start_date end_date degerinden buyuk olamaz.")
+
+    ranges: list[tuple[date, date]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        ranges.append((cursor, cursor))
+        cursor = cursor + timedelta(days=1)
+    return ranges
 
 
 def iter_monthly_ranges(start_date: date, end_date: date) -> list[tuple[date, date]]:

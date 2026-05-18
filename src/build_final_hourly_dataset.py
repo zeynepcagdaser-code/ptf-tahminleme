@@ -10,13 +10,16 @@ from src.config import PROJECT_ROOT
 
 
 RAW_DIR = PROJECT_ROOT / "data" / "raw" / "final_selected_features"
-PTF_PATH = RAW_DIR / "ptf.csv"
+PTF_INTERIM_PATH = RAW_DIR / "ptf_interim.csv"
+PTF_KESINLESMIS_PATH = RAW_DIR / "ptf_kesinlesmis.csv"
+LEGACY_PTF_PATH = RAW_DIR / "ptf.csv"
 
 FINAL_COLUMNS = [
     "datetime",
     "date",
     "hour",
     "ptf",
+    "ptf_kesinlesmis",
     "gop_fiyattan_bagimsiz_alis",
     "gop_fiyattan_bagimsiz_satis",
     "price_independent_buy_sell_ratio",
@@ -33,12 +36,26 @@ FINAL_COLUMNS = [
 
 
 def build_final_hourly_dataset() -> tuple[pd.DataFrame, dict[str, bool]]:
-    ptf = _read_ptf()
-    dataset = ptf.copy()
+    interim = _read_price_series(PTF_INTERIM_PATH, None, "Kesinlesmemis PTF (I-MCP)")
+    kesinlesmis = _read_price_series(PTF_KESINLESMIS_PATH, LEGACY_PTF_PATH, "Kesinlesmis PTF (MCP)")
+
+    dataset = interim.rename(columns={"price": "ptf"}).copy()
+    dataset = dataset.merge(
+        kesinlesmis.rename(columns={"price": "ptf_kesinlesmis"})[
+            ["datetime", "ptf_kesinlesmis"]
+        ],
+        on="datetime",
+        how="outer",
+    )
+    dataset["date"] = dataset["datetime"].dt.date.astype(str)
+    dataset["hour"] = dataset["datetime"].dt.hour
+
     flags = {
         "ratio_created": False,
         "grf_daily_broadcast": False,
         "usd_daily_broadcast": False,
+        "has_interim_ptf": bool(dataset["ptf"].notna().any()),
+        "has_kesinlesmis_ptf": bool(dataset["ptf_kesinlesmis"].notna().any()),
     }
 
     dataset = _merge_hourly(
@@ -109,26 +126,29 @@ def build_final_hourly_dataset() -> tuple[pd.DataFrame, dict[str, bool]]:
     return dataset, flags
 
 
-def _read_ptf() -> pd.DataFrame:
-    if not PTF_PATH.exists():
-        raise FileNotFoundError(f"API'den yeniden cekilmis PTF raw dosyasi bulunamadi: {PTF_PATH}")
+def _read_price_series(primary_path: Path, fallback_path: Path | None, label: str) -> pd.DataFrame:
+    path = primary_path
+    if not path.exists() and fallback_path is not None and fallback_path.exists():
+        path = fallback_path
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{label} dosyasi bulunamadi: {primary_path}\n"
+            "EPİAŞ verisi icin: python main.py --fetch"
+        )
 
-    ptf = pd.read_csv(PTF_PATH)
-    ptf = _with_datetime(ptf)
-    value_column = _choose_value_column(ptf, ["mcp", "ptf", "price"])
+    data = pd.read_csv(path)
+    data = _with_datetime(data)
+    value_column = _choose_value_column(data, ["price", "mcp", "ptf", "interimMcp"])
     if value_column is None:
-        raise ValueError(f"PTF raw dosyasinda fiyat kolonu bulunamadi: {list(ptf.columns)}")
+        raise ValueError(f"{label} dosyasinda fiyat kolonu bulunamadi: {list(data.columns)}")
 
     result = pd.DataFrame(
         {
-            "datetime": ptf["datetime"],
-            "ptf": pd.to_numeric(ptf[value_column], errors="coerce"),
+            "datetime": data["datetime"],
+            "price": pd.to_numeric(data[value_column], errors="coerce"),
         }
     )
-    result = result.dropna(subset=["datetime", "ptf"]).drop_duplicates(subset=["datetime"])
-    result["date"] = result["datetime"].dt.date.astype(str)
-    result["hour"] = result["datetime"].dt.hour
-    return result[["datetime", "date", "hour", "ptf"]].sort_values("datetime").reset_index(drop=True)
+    return result.dropna(subset=["datetime"]).drop_duplicates(subset=["datetime"])
 
 
 def _merge_hourly(

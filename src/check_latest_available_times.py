@@ -48,12 +48,27 @@ class LatestTimeReportRow:
 
 SOURCES: tuple[SourceSpec, ...] = (
     SourceSpec(
+        "ptf_interim",
         "ptf",
-        "ptf",
-        ("data/raw/final_selected_features/ptf.csv", "data/raw/electricity_features/ptf.csv", "data/raw/ptf_2025_to_today.csv"),
+        (
+            "data/raw/final_selected_features/ptf_interim.csv",
+            "data/raw/final_selected_features/ptf.csv",
+        ),
+        "hourly",
+        "interim_mcp",
+        "Kesinlesmemis PTF (I-MCP); tahmin kesim aninda kullanilir.",
+    ),
+    SourceSpec(
+        "ptf_kesinlesmis",
+        "ptf_kesinlesmis",
+        (
+            "data/raw/final_selected_features/ptf_kesinlesmis.csv",
+            "data/raw/final_selected_features/ptf.csv",
+            "data/raw/ptf_2025_to_today.csv",
+        ),
         "hourly",
         "published_market_price",
-        "Target icin kullanilir; ileri tahminde sadece gecmis lag degerleri kullanilmali.",
+        "Kesinlesmis PTF (MCP); 12 saatlik tahmin hedefi.",
     ),
     SourceSpec(
         "smf",

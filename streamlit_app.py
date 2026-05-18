@@ -8,440 +8,277 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
+from plotly.subplots import make_subplots
+
+from src.config import PROJECT_ROOT
 
 
 ROOT = Path(__file__).resolve().parent
+PROCESSED = ROOT / "data" / "processed"
 APP_DATA_PATH = ROOT / "app_data" / "dashboard_data.json"
-LOCAL_PROCESSED_DIR = ROOT / "data" / "processed"
-
-FEATURE_LABELS_TR = {
-    "ptf": "PTF",
-    "smf": "SMF",
-    "real_time_consumption": "Gerçek Zamanlı Tüketim",
-    "wind_generation": "Rüzgar Üretimi",
-    "solar_generation": "Güneş Üretimi",
-    "hydro_dam_generation": "Barajlı Hidro Üretimi",
-    "unlicensed_generation_total": "Lisanssız Üretim Toplamı",
-    "load_forecast_plan": "Yük Tahmin Planı",
-    "grf_tl": "Günlük Referans Fiyatı TL",
-    "usd_try": "USD/TRY",
-    "gop_fiyattan_bagimsiz_alis": "GÖP Fiyattan Bağımsız Alış",
-    "gop_fiyattan_bagimsiz_satis": "GÖP Fiyattan Bağımsız Satış",
-    "price_independent_buy_sell_ratio": "Fiyattan Bağımsız Alış/Satış Oranı",
-}
-
-COLUMN_LABELS_TR = {
-    "scenario": "Senaryo",
-    "feature_count": "Özellik Sayısı",
-    "MAE": "MAE",
-    "RMSE": "RMSE",
-    "SMAPE": "SMAPE",
-    "R2": "R²",
-    "target_datetime": "Hedef Tarih/Saat",
-    "actual_ptf": "Gerçek PTF",
-    "predicted_ptf": "Tahmin PTF",
-    "absolute_error": "Mutlak Hata",
-    "data_source": "Veri Kaynağı",
-    "latest_available_time": "Son Yayınlanan Zaman",
-    "inferred_frequency": "Veri Frekansı",
-    "delay_text": "Gecikme",
-    "forecast_usage_recommendation": "Tahminde Kullanım Önerisi",
-    "column": "Kolon",
-    "datetime": "Tarih/Saat",
-    "date": "Tarih",
-    "hour": "Saat",
-    "ptf": "PTF",
-    "gop_fiyattan_bagimsiz_alis": "GÖP Fiyattan Bağımsız Alış",
-    "gop_fiyattan_bagimsiz_satis": "GÖP Fiyattan Bağımsız Satış",
-    "price_independent_buy_sell_ratio": "Fiyattan Bağımsız Alış/Satış Oranı",
-    "load_forecast_plan": "Yük Tahmin Planı",
-    "wind_generation": "Rüzgar Üretimi",
-    "solar_generation": "Güneş Üretimi",
-    "hydro_dam_generation": "Barajlı Hidro Üretimi",
-    "real_time_consumption": "Gerçek Zamanlı Tüketim",
-    "grf_tl": "Günlük Referans Fiyatı TL",
-    "unlicensed_generation_total": "Lisanssız Üretim Toplamı",
-    "smf": "SMF",
-    "usd_try": "USD/TRY",
-    "missing_count_before": "Doldurma Öncesi Eksik Sayısı",
-    "missing_count_after": "Doldurma Sonrası Eksik Sayısı",
-}
-
-FREQUENCY_LABELS_TR = {
-    "hourly": "Saatlik",
-    "daily": "Günlük",
-    "monthly": "Aylık",
-}
 
 
 st.set_page_config(
-    page_title="PTF Tahminleme Paneli",
-    page_icon="📈",
+    page_title="PTF 12 Saat Tahmin",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-def load_snapshot_dashboard_data() -> dict:
-    if APP_DATA_PATH.exists():
-        return json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
-    return build_from_local_processed()
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_live_dashboard_data() -> dict:
-    snapshot = load_snapshot_dashboard_data()
-
-    from src.build_final_hourly_dataset import build_final_hourly_dataset
-    from src.check_latest_available_times import run_latest_available_times_check
-    from src.fetch_final_selected_features import run_fetch_final_selected_features
-    from src.fill_final_dataset_missing import fill_final_dataset_missing
-
-    fetch_summary = run_fetch_final_selected_features()
-    raw_dataset, flags = build_final_hourly_dataset()
-    final_dataset, missing_report = fill_final_dataset_missing(raw_dataset)
-
-    output_path = LOCAL_PROCESSED_DIR / "final_hourly_dataset.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    final_dataset.to_csv(output_path, index=False)
-
-    latest_report = run_latest_available_times_check()
-    summary = build_final_summary(final_dataset)
-    summary.update(
-        {
-            "attempted_features": fetch_summary.get("attempted_features", 0),
-            "successful_features": fetch_summary.get("successful_features", 0),
-            "failed_features": fetch_summary.get("failed_features", 0),
-            "ratio_created": bool(flags.get("ratio_created")),
-            "grf_daily_broadcast": bool(flags.get("grf_daily_broadcast")),
-            "usd_daily_broadcast": bool(flags.get("usd_daily_broadcast")),
-        }
-    )
-
-    return {
-        "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "source": "live_epias",
-        "summary": summary,
-        "metrics": snapshot.get("metrics", []),
-        "latest_available": latest_report.to_dict(orient="records"),
-        "missing_report": missing_report.to_dict(orient="records"),
-        "final_dataset": final_dataset_records(final_dataset),
-        "predictions": snapshot.get("predictions", {}),
+st.markdown(
+    """
+    <style>
+    .hero {
+        background: linear-gradient(135deg, #0c1e33 0%, #14558f 100%);
+        color: #f5f9ff;
+        padding: 1.2rem 1.4rem;
+        border-radius: 14px;
+        margin-bottom: 1rem;
     }
+    .hero h1 { margin: 0; font-size: 1.85rem; }
+    .hero p { margin: 0.4rem 0 0; opacity: 0.95; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-def build_from_local_processed() -> dict:
-    def read_csv(name: str, **kwargs) -> pd.DataFrame:
-        path = LOCAL_PROCESSED_DIR / name
-        return pd.read_csv(path, **kwargs) if path.exists() else pd.DataFrame()
-
-    metrics = read_csv("d_plus_2_metrics_comparison.csv")
-    latest = read_csv("latest_available_times_report.csv")
-    missing = read_csv("final_dataset_missing_report.csv")
-    final = read_csv("final_hourly_dataset.csv", usecols=["datetime", "ptf"])
-    final_full = read_csv("final_hourly_dataset.csv")
-    before = read_csv("d_plus_2_before_14_predictions.csv")
-    after = read_csv("d_plus_2_after_14_predictions.csv")
-
-    summary = {}
-    if not final.empty:
-        final["datetime"] = pd.to_datetime(final["datetime"], errors="coerce")
-        summary = {
-            "final_rows": int(len(final)),
-            "final_start": str(final["datetime"].min()),
-            "final_end": str(final["datetime"].max()),
-            "ptf_min": float(final["ptf"].min()),
-            "ptf_max": float(final["ptf"].max()),
-            "ptf_mean": float(final["ptf"].mean()),
-        }
-
-    return {
-        "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "source": "local_processed",
-        "summary": summary,
-        "metrics": metrics.to_dict(orient="records"),
-        "latest_available": latest.to_dict(orient="records"),
-        "missing_report": missing.to_dict(orient="records"),
-        "final_dataset": final_dataset_records(final_full),
-        "predictions": {
-            "before_14": prediction_records(before),
-            "after_14": prediction_records(after),
-        },
-    }
-
-
-def build_final_summary(final: pd.DataFrame) -> dict:
-    if final.empty:
-        return {}
-
-    frame = final.copy()
-    frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
-    return {
-        "final_rows": int(len(frame)),
-        "final_start": str(frame["datetime"].min()),
-        "final_end": str(frame["datetime"].max()),
-        "ptf_min": float(frame["ptf"].min()),
-        "ptf_max": float(frame["ptf"].max()),
-        "ptf_mean": float(frame["ptf"].mean()),
-    }
-
-
-def prediction_records(frame: pd.DataFrame, limit: int = 336) -> list[dict]:
-    if frame.empty:
-        return []
-    keep = ["target_datetime", "actual_ptf", "predicted_ptf", "absolute_error"]
-    available = [column for column in keep if column in frame.columns]
-    frame = frame[available].tail(limit).copy()
-    for column in ["actual_ptf", "predicted_ptf", "absolute_error"]:
-        if column in frame.columns:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame.to_dict(orient="records")
-
-
-def final_dataset_records(frame: pd.DataFrame, limit: int = 5000) -> list[dict]:
-    if frame.empty:
-        return []
-    display = frame.tail(limit).copy()
-    if "datetime" in display.columns:
-        display["datetime"] = pd.to_datetime(display["datetime"], errors="coerce").astype(str)
-    return display.to_dict(orient="records")
-
-
-def format_number(value, digits: int = 2) -> str:
-    if value is None or pd.isna(value):
-        return "-"
-    return f"{float(value):,.{digits}f}"
-
-
-def scenario_label(value: str) -> str:
-    return "14:00 Sonrası" if value == "after_14" else "14:00 Öncesi"
-
-
-def localized_dataframe(frame: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
-    if frame.empty:
-        return frame
-
-    display = frame.copy()
-    if columns is not None:
-        display = display[[column for column in columns if column in display.columns]]
-
-    for column in ("data_source", "column"):
-        if column in display.columns:
-            display[column] = display[column].map(FEATURE_LABELS_TR).fillna(display[column])
-
-    if "scenario" in display.columns:
-        display["scenario"] = display["scenario"].map(scenario_label).fillna(display["scenario"])
-
-    if "inferred_frequency" in display.columns:
-        display["inferred_frequency"] = display["inferred_frequency"].map(FREQUENCY_LABELS_TR).fillna(
-            display["inferred_frequency"]
-        )
-
-    return display.rename(columns=COLUMN_LABELS_TR)
-
-
-def apply_streamlit_secrets_to_env() -> None:
+def apply_secrets() -> None:
     load_dotenv(ROOT / ".env")
     try:
         secrets = dict(st.secrets)
     except Exception:
         secrets = {}
-
-    for key in (
-        "EPIAS_USERNAME",
-        "EPIAS_PASSWORD",
-        "EPIAS_TGT",
-        "EPIAS_TIMEOUT_SECONDS",
-        "EPIAS_PAGE_SIZE",
-        "EPIAS_BASE_URL",
-        "EPIAS_AUTH_URL",
-    ):
+    for key in ("EPIAS_USERNAME", "EPIAS_PASSWORD", "EPIAS_TGT", "EPIAS_BASE_URL", "EPIAS_AUTH_URL"):
         value = secrets.get(key)
         if value is not None and str(value).strip():
             os.environ[key] = str(value)
 
 
-def has_epias_credentials() -> bool:
-    apply_streamlit_secrets_to_env()
+def has_credentials() -> bool:
+    apply_secrets()
     return bool(os.getenv("EPIAS_TGT") or (os.getenv("EPIAS_USERNAME") and os.getenv("EPIAS_PASSWORD")))
 
 
-st.title("PTF Tahminleme Paneli")
+def read_csv(name: str) -> pd.DataFrame:
+    path = PROCESSED / name
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
+
+def load_dashboard_payload() -> dict:
+    if APP_DATA_PATH.exists():
+        return json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
+    return build_payload()
+
+
+def build_payload() -> dict:
+    metrics = {}
+    metrics_path = PROCESSED / "ptf_12h_metrics.json"
+    if metrics_path.exists():
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+    live = read_csv("ptf_12h_live_forecast.csv")
+    preds = read_csv("ptf_12h_predictions.csv")
+    horizon = read_csv("ptf_12h_horizon_metrics.csv")
+    hourly = read_csv("final_hourly_dataset.csv")
+
+    if not live.empty:
+        live["issue_datetime"] = pd.to_datetime(live["issue_datetime"], errors="coerce").astype(str)
+        live["target_datetime"] = pd.to_datetime(live["target_datetime"], errors="coerce").astype(str)
+
+    if not preds.empty:
+        preds["issue_datetime"] = pd.to_datetime(preds["issue_datetime"], errors="coerce").astype(str)
+        preds["target_datetime"] = pd.to_datetime(preds["target_datetime"], errors="coerce").astype(str)
+
+    cutoff = None
+    if not live.empty:
+        cutoff = live["issue_datetime"].iloc[0]
+    elif not hourly.empty:
+        hourly["datetime"] = pd.to_datetime(hourly["datetime"], errors="coerce")
+        ptf = hourly.dropna(subset=["ptf"])
+        if not ptf.empty:
+            cutoff = str(ptf["datetime"].max())
+
+    return {
+        "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "cutoff_datetime": cutoff,
+        "metrics": metrics,
+        "live_forecast": live.to_dict(orient="records"),
+        "test_predictions": preds.to_dict(orient="records"),
+        "horizon_metrics": horizon.to_dict(orient="records"),
+    }
+
+
+def save_payload(payload: dict) -> None:
+    APP_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    APP_DATA_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def fmt(value, digits: int = 2) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):,.{digits}f}"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def run_live_update() -> dict:
+    from src.run_ptf_pipeline import run_full_ptf_pipeline
+
+    run_full_ptf_pipeline(fetch_live=True)
+    payload = build_payload()
+    save_payload(payload)
+    return payload
+
+
+# --- Sidebar ---
 with st.sidebar:
-    st.header("Panel")
-    scenario = st.radio(
-        "Tahmin senaryosu",
-        ["before_14", "after_14"],
-        format_func=scenario_label,
-        index=1,
-    )
+    st.header("PTF Tahmin")
+    view_mode = st.radio("Görünüm", ["Canlı 12 Saat Tahmin", "Test Performansı"], index=0)
     st.divider()
-    refresh_now = st.button("Veriyi şimdi güncelle", type="primary")
-    st.caption("Panel hızlı açılır. EPİAŞ canlı veri çekimi yalnızca bu butona basınca çalışır.")
+    refresh = st.button("Veriyi çek ve yeniden eğit", type="primary")
+    st.caption("İlk kurulum: `python main.py`")
+    st.caption("Canlı güncelleme EPİAŞ kimlik bilgisi ister.")
 
-if refresh_now:
-    load_live_dashboard_data.clear()
+if refresh:
+    run_live_update.clear()
 
-credentials_ready = has_epias_credentials()
-
-if refresh_now and credentials_ready:
-    with st.spinner("EPİAŞ verileri canlı olarak çekiliyor ve final dataset güncelleniyor..."):
+if refresh and has_credentials():
+    with st.spinner("EPİAŞ verisi çekiliyor, model eğitiliyor..."):
         try:
-            data = load_live_dashboard_data()
-            data_source_label = "Canlı EPİAŞ"
-        except Exception as exc:  # noqa: BLE001 - UI should fall back instead of crashing.
-            st.error(f"Canlı veri güncellemesi tamamlanamadı: {type(exc).__name__}: {exc}")
-            data = load_snapshot_dashboard_data()
-            data_source_label = "Snapshot"
-elif refresh_now:
-    st.warning("Canlı veri çekimi için Streamlit Secrets içine EPIAS_USERNAME/EPIAS_PASSWORD veya EPIAS_TGT eklenmeli.")
-    data = load_snapshot_dashboard_data()
-    data_source_label = "Snapshot"
+            data = run_live_update()
+            st.success("Güncelleme tamamlandı.")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Hata: {exc}")
+            data = load_dashboard_payload()
+elif refresh:
+    st.warning("EPİAŞ secrets gerekli.")
+    data = load_dashboard_payload()
 else:
-    data = load_snapshot_dashboard_data()
-    data_source_label = "Snapshot"
+    data = load_dashboard_payload()
 
-summary = data.get("summary", {})
-metrics = pd.DataFrame(data.get("metrics", []))
-latest = pd.DataFrame(data.get("latest_available", []))
-missing = pd.DataFrame(data.get("missing_report", []))
-final_dataset = pd.DataFrame(data.get("final_dataset", []))
-if final_dataset.empty and APP_DATA_PATH.exists():
-    fresh_snapshot = json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
-    final_dataset = pd.DataFrame(fresh_snapshot.get("final_dataset", []))
+metrics = data.get("metrics", {})
+live_df = pd.DataFrame(data.get("live_forecast", []))
+test_df = pd.DataFrame(data.get("test_predictions", []))
+horizon_df = pd.DataFrame(data.get("horizon_metrics", []))
 
-st.caption(
-    "D+2 PTF tahmini paneli. Sayfa hızlı açılır; EPİAŞ canlı veri çekimi yan menüdeki butonla başlatılır."
+st.markdown(
+    """
+    <div class="hero">
+      <h1>PTF — Sonraki 12 Saat Tahmini</h1>
+      <p>Son açıklanan kesinleşmemiş PTF (I-MCP) saatinden itibaren gelecek 12 saat için kesinleşmiş PTF (MCP) tahmini.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-with st.sidebar:
-    st.divider()
-    st.caption(f"Veri kaynağı: {data_source_label}")
-    st.caption(f"Güncelleme zamanı: {data.get('generated_at', '-')}")
+if live_df.empty and test_df.empty:
+    st.warning("Henüz tahmin yok. Terminalde `python main.py` çalıştırın.")
 
-metric_cols = st.columns(5)
-metric_cols[0].metric("Final Satır", f"{summary.get('final_rows', 0):,}")
-metric_cols[1].metric("Başlangıç", str(summary.get("final_start", "-"))[:10])
-metric_cols[2].metric("Bitiş", str(summary.get("final_end", "-"))[:10])
-metric_cols[3].metric("PTF Ortalama", format_number(summary.get("ptf_mean")))
+h1_row = horizon_df.loc[horizon_df["forecast_horizon"] == 1].iloc[0] if not horizon_df.empty else None
 
-after_row = metrics.loc[metrics.get("scenario", pd.Series(dtype=str)).eq("after_14")]
-after_r2 = after_row["R2"].iloc[0] if not after_row.empty and "R2" in after_row else None
-metric_cols[4].metric("14:00 Sonrası R²", format_number(after_r2, 3))
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("Son I-MCP Saati", str(data.get("cutoff_datetime", "-"))[:16])
+k2.metric("+1 Saat MAE", fmt(h1_row["MAE"]) if h1_row is not None else "-")
+k3.metric("+1 Saat R²", fmt(h1_row["R2"], 3) if h1_row is not None else "-")
+k4.metric("12 Saat Ort. MAE", fmt(metrics.get("MAE")))
+k5.metric("12 Saat Ort. R²", fmt(metrics.get("R2"), 3))
+k6.metric("Güncelleme", str(data.get("generated_at", "-"))[:16])
 
-live_cols = st.columns(4)
-live_cols[0].metric("Çekilmeye Çalışılan", f"{summary.get('attempted_features', 0):,}")
-live_cols[1].metric("Başarılı Veri", f"{summary.get('successful_features', 0):,}")
-live_cols[2].metric("Başarısız Veri", f"{summary.get('failed_features', 0):,}")
-live_cols[3].metric("USD/GRF Yayılım", "Tamam" if summary.get("usd_daily_broadcast") or summary.get("grf_daily_broadcast") else "-")
+if view_mode == "Canlı 12 Saat Tahmin":
+    st.subheader("Gelecek 12 Saat — Tahmin Edilen Kesinleşmiş PTF (MCP)")
+    if not live_df.empty:
+        live_df["target_datetime"] = pd.to_datetime(live_df["target_datetime"], errors="coerce")
+        live_df = live_df.sort_values("forecast_horizon")
 
-tab_overview, tab_predictions, tab_data, tab_dataset = st.tabs(["Performans", "Tahminler", "Veri Durumu", "Veriler"])
-
-with tab_overview:
-    left, right = st.columns([1.25, 1])
-    with left:
-        st.subheader("Senaryo Performansı")
-        if not metrics.empty:
-            fig = go.Figure()
-            fig.add_bar(x=metrics["scenario"].map(scenario_label), y=metrics["RMSE"], name="RMSE")
-            fig.add_bar(x=metrics["scenario"].map(scenario_label), y=metrics["MAE"], name="MAE")
-            fig.update_layout(
-                barmode="group",
-                height=430,
-                margin=dict(l=20, r=20, t=30, b=20),
-                yaxis_title="Hata",
-                legend_orientation="h",
-            )
-            st.plotly_chart(fig, width="stretch")
-        else:
-            st.warning("Metrik dosyası bulunamadı.")
-    with right:
-        st.subheader("Metrik Tablosu")
-        if not metrics.empty:
-            display = localized_dataframe(metrics, ["scenario", "feature_count", "MAE", "RMSE", "SMAPE", "R2"])
-            st.dataframe(display, width="stretch", hide_index=True)
-        else:
-            st.info("Gösterilecek metrik yok.")
-
-with tab_predictions:
-    rows = pd.DataFrame(data.get("predictions", {}).get(scenario, []))
-    st.subheader(f"{scenario_label(scenario)} - Son Test Tahminleri")
-    if not rows.empty:
-        rows["target_datetime"] = pd.to_datetime(rows["target_datetime"], errors="coerce")
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
-                x=rows["target_datetime"],
-                y=rows["actual_ptf"],
-                mode="lines",
-                name="Gerçek PTF",
-                line=dict(width=2, color="#17202A"),
+                x=live_df["target_datetime"],
+                y=live_df["predicted_ptf"],
+                mode="lines+markers",
+                name="Tahmin PTF",
+                line=dict(color="#0ea5e9", width=3),
+                marker=dict(size=9),
             )
+        )
+        fig.update_layout(
+            height=480,
+            yaxis_title="PTF (TL/MWh)",
+            xaxis_title="Saat",
+            hovermode="x unified",
+            margin=dict(l=20, r=20, t=30, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        table = live_df.rename(
+            columns={
+                "forecast_horizon": "Saat (+)",
+                "target_datetime": "Hedef Zaman",
+                "predicted_ptf": "Tahmin PTF",
+            }
+        )[["Saat (+)", "Hedef Zaman", "Tahmin PTF"]]
+        st.dataframe(table, use_container_width=True, hide_index=True)
+    else:
+        st.info("Canlı tahmin dosyası yok.")
+
+else:
+    st.subheader("Test Seti — Gerçek vs Tahmin (son dönem)")
+    if not test_df.empty:
+        test_df["target_datetime"] = pd.to_datetime(test_df["target_datetime"], errors="coerce")
+        recent_issue = test_df["issue_datetime"].max()
+        subset = test_df[test_df["issue_datetime"] == recent_issue].copy()
+        if subset.empty:
+            subset = test_df.sort_values("target_datetime").tail(12)
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.06)
+        fig.add_trace(
+            go.Scatter(
+                x=subset["target_datetime"],
+                y=subset["actual_ptf"],
+                mode="lines+markers",
+                name="Gerçek PTF",
+                line=dict(color="#111827", width=2.5),
+            ),
+            row=1,
+            col=1,
         )
         fig.add_trace(
             go.Scatter(
-                x=rows["target_datetime"],
-                y=rows["predicted_ptf"],
-                mode="lines",
-                name="Tahmin",
-                line=dict(width=2, color="#0B6BCB"),
+                x=subset["target_datetime"],
+                y=subset["predicted_ptf"],
+                mode="lines+markers",
+                name="Tahmin PTF",
+                line=dict(color="#0ea5e9", width=2.5),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(
+                x=subset["target_datetime"],
+                y=subset["absolute_error"],
+                name="Mutlak Hata",
+                marker_color="rgba(239,68,68,0.5)",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.update_layout(height=560, yaxis_title="PTF", yaxis2_title="Hata")
+        st.plotly_chart(fig, use_container_width=True)
+
+        if not horizon_df.empty:
+            st.subheader("Saat Ufku Bazında Hata (MAE)")
+            hfig = go.Figure()
+            hfig.add_bar(
+                x=horizon_df["forecast_horizon"],
+                y=horizon_df["MAE"],
+                marker_color="#6366f1",
             )
-        )
-        fig.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20), yaxis_title="PTF")
-        st.plotly_chart(fig, width="stretch")
-
-        st.subheader("Tahmin Tablosu")
-        st.dataframe(
-            localized_dataframe(rows.tail(96), ["target_datetime", "actual_ptf", "predicted_ptf", "absolute_error"]),
-            width="stretch",
-            hide_index=True,
-        )
+            hfig.update_layout(
+                xaxis_title="Tahmin ufku (saat)",
+                yaxis_title="MAE (TL/MWh)",
+                height=320,
+            )
+            st.plotly_chart(hfig, use_container_width=True)
     else:
-        st.warning("Tahmin verisi bulunamadı.")
-
-with tab_data:
-    left, right = st.columns([1.25, 1])
-    with left:
-        st.subheader("Son Yayınlanan Veri Zamanları")
-        if not latest.empty:
-            columns = [
-                "data_source",
-                "latest_available_time",
-                "inferred_frequency",
-                "delay_text",
-                "forecast_usage_recommendation",
-            ]
-            st.dataframe(localized_dataframe(latest, columns), width="stretch", hide_index=True)
-        else:
-            st.info("Son yayın zamanı raporu bulunamadı.")
-    with right:
-        st.subheader("Eksik Veri Raporu")
-        if not missing.empty:
-            columns = ["column", "missing_count_before", "missing_count_after"]
-            st.dataframe(localized_dataframe(missing, columns), width="stretch", hide_index=True)
-        else:
-            st.info("Eksik veri raporu bulunamadı.")
-
-with tab_dataset:
-    st.subheader("Çekilen ve Saatlik Hizalanan Veriler")
-    if not final_dataset.empty:
-        search = st.text_input("Kolonlarda ara", placeholder="Örn: PTF, üretim, tüketim, USD")
-        display_dataset = final_dataset.copy()
-
-        if search.strip():
-            query = search.strip().lower()
-            matching_columns = [
-                column
-                for column in display_dataset.columns
-                if query in column.lower() or query in COLUMN_LABELS_TR.get(column, "").lower()
-            ]
-            base_columns = [column for column in ["datetime", "date", "hour", "ptf"] if column in display_dataset.columns]
-            selected_columns = list(dict.fromkeys(base_columns + matching_columns))
-            if selected_columns:
-                display_dataset = display_dataset[selected_columns]
-
-        st.caption(f"Gösterilen satır sayısı: {len(display_dataset):,}")
-        st.dataframe(localized_dataframe(display_dataset), width="stretch", hide_index=True)
-    else:
-        st.info("Final veri seti bulunamadı.")
+        st.info("Test tahmin dosyası yok. `python main.py` çalıştırın.")
