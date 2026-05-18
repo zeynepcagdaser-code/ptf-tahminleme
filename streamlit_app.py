@@ -16,10 +16,14 @@ from src.config import PROJECT_ROOT
 ROOT = Path(__file__).resolve().parent
 PROCESSED = ROOT / "data" / "processed"
 APP_DATA_PATH = ROOT / "app_data" / "dashboard_data.json"
+FINAL_METRICS_PATH = PROCESSED / "ptf_12h_final_metrics.json"
+FINAL_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
+FINAL_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
+BASELINE_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_horizon_metrics.csv"
 
 
 st.set_page_config(
-    page_title="PTF 12 Saat Tahmin",
+    page_title="PTF 12 Saat Tahmin - Ensemble Sistemi",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -31,12 +35,20 @@ st.markdown(
     .hero {
         background: linear-gradient(135deg, #0c1e33 0%, #14558f 100%);
         color: #f5f9ff;
-        padding: 1.2rem 1.4rem;
+        padding: 1.5rem 2rem;
         border-radius: 14px;
-        margin-bottom: 1rem;
+        margin-bottom: 1.5rem;
     }
-    .hero h1 { margin: 0; font-size: 1.85rem; }
-    .hero p { margin: 0.4rem 0 0; opacity: 0.95; }
+    .hero h1 { margin: 0; font-size: 2rem; font-weight: 700; }
+    .hero p { margin: 0.6rem 0 0; opacity: 0.95; font-size: 1.05rem; }
+    .metric-box {
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 4px solid #0ea5e9;
+    }
+    .improvement-positive { color: #10b981; font-weight: 600; }
+    .improvement-negative { color: #ef4444; font-weight: 600; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -60,58 +72,26 @@ def has_credentials() -> bool:
     return bool(os.getenv("EPIAS_TGT") or (os.getenv("EPIAS_USERNAME") and os.getenv("EPIAS_PASSWORD")))
 
 
-def read_csv(name: str) -> pd.DataFrame:
-    path = PROCESSED / name
+def read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
 
-def load_dashboard_payload() -> dict:
-    if APP_DATA_PATH.exists():
-        return json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
-    return build_payload()
+def load_final_metrics() -> dict:
+    if FINAL_METRICS_PATH.exists():
+        return json.loads(FINAL_METRICS_PATH.read_text(encoding="utf-8"))
+    return {}
 
 
-def build_payload() -> dict:
-    metrics = {}
-    metrics_path = PROCESSED / "ptf_12h_metrics.json"
-    if metrics_path.exists():
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-
-    live = read_csv("ptf_12h_live_forecast.csv")
-    preds = read_csv("ptf_12h_predictions.csv")
-    horizon = read_csv("ptf_12h_horizon_metrics.csv")
-    hourly = read_csv("final_hourly_dataset.csv")
-
-    if not live.empty:
-        live["issue_datetime"] = pd.to_datetime(live["issue_datetime"], errors="coerce").astype(str)
-        live["target_datetime"] = pd.to_datetime(live["target_datetime"], errors="coerce").astype(str)
-
-    if not preds.empty:
-        preds["issue_datetime"] = pd.to_datetime(preds["issue_datetime"], errors="coerce").astype(str)
-        preds["target_datetime"] = pd.to_datetime(preds["target_datetime"], errors="coerce").astype(str)
-
-    cutoff = None
-    if not live.empty:
-        cutoff = live["issue_datetime"].iloc[0]
-    elif not hourly.empty:
-        hourly["datetime"] = pd.to_datetime(hourly["datetime"], errors="coerce")
-        ptf = hourly.dropna(subset=["ptf"])
-        if not ptf.empty:
-            cutoff = str(ptf["datetime"].max())
-
-    return {
-        "generated_at": pd.Timestamp.now(tz="Europe/Istanbul").strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "cutoff_datetime": cutoff,
-        "metrics": metrics,
-        "live_forecast": live.to_dict(orient="records"),
-        "test_predictions": preds.to_dict(orient="records"),
-        "horizon_metrics": horizon.to_dict(orient="records"),
-    }
+def load_final_predictions() -> pd.DataFrame:
+    return read_csv(FINAL_PREDICTIONS_PATH)
 
 
-def save_payload(payload: dict) -> None:
-    APP_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    APP_DATA_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+def load_final_horizon_metrics() -> pd.DataFrame:
+    return read_csv(FINAL_HORIZON_METRICS_PATH)
+
+
+def load_baseline_horizon_metrics() -> pd.DataFrame:
+    return read_csv(BASELINE_HORIZON_METRICS_PATH)
 
 
 def fmt(value, digits: int = 2) -> str:
@@ -120,76 +100,274 @@ def fmt(value, digits: int = 2) -> str:
     return f"{float(value):,.{digits}f}"
 
 
+def fmt_pct(value, digits: int = 1) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):+.{digits}f}%"
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def run_live_update() -> dict:
     from src.run_ptf_pipeline import run_full_ptf_pipeline
 
     run_full_ptf_pipeline(fetch_live=True)
-    payload = build_payload()
-    save_payload(payload)
-    return payload
+    from scripts.update_dashboard_snapshot import update_dashboard_snapshot
+    update_dashboard_snapshot()
+    return load_final_metrics()
 
 
 # --- Sidebar ---
 with st.sidebar:
-    st.header("PTF Tahmin")
-    view_mode = st.radio("Görünüm", ["Canlı 12 Saat Tahmin", "Test Performansı"], index=0)
-    st.divider()
-    refresh = st.button("Veriyi çek ve yeniden eğit", type="primary")
-    st.caption("İlk kurulum: `python main.py`")
-    st.caption("Canlı güncelleme EPİAŞ kimlik bilgisi ister.")
+    st.header("⚡ PTF Tahmin Sistemi")
+    st.markdown("---")
+    
+    st.markdown("### 📊 Görünüm Modu")
+    view_mode = st.radio(
+        "Seçiniz",
+        ["Genel Bakış", "Ensemble Detayları", "Canlı Tahmin", "Performans Analizi"],
+        label_visibility="collapsed"
+    )
+    
+    st.markdown("---")
+    st.markdown("### ℹ️ Proje Hakkında")
+    with st.expander("Sistem Mimarisi", expanded=False):
+        st.markdown("""
+        **Ensemble Sistemi:**
+        - CatBoost (ML modeli)
+        - Same Hour Yesterday (dün aynı saat)
+        - Same Hour Last Week (geçen hafta aynı saat)
+        - Rolling 24h Mean (24 saatlik hareketli ortalama)
+        - Rolling 168h Mean (haftalık hareketli ortalama)
+        
+        **Bias Correction:**
+        - Her horizon için ayrı bias düzeltmesi
+        - Sistemik underprediction'ı ortadan kaldırır
+        
+        **Optimizasyon:**
+        - Validation set üzerinde ağırlık optimizasyonu
+        - Horizon-specific weight tuning
+        """)
+    
+    with st.expander("Metrikler", expanded=False):
+        st.markdown("""
+        **MAE (Mean Absolute Error):**
+        Ortalama mutlak hata (TL/MWh)
+        
+        **RMSE (Root Mean Squared Error):**
+        Kök ortalama kare hata (TL/MWh)
+        
+        **SMAPE (Symmetric MAPE):**
+        Simetrik mutlak yüzde hata
+        
+        **R² (R-squared):**
+        Belirleme katsayısı (1 = mükemmel)
+        """)
+    
+    st.markdown("---")
+    refresh = st.button("🔄 Veriyi Güncelle", type="primary", use_container_width=True)
+    st.caption("EPİAŞ verisi çekmek için kimlik bilgisi gerekli")
+
 
 if refresh:
     run_live_update.clear()
 
 if refresh and has_credentials():
-    with st.spinner("EPİAŞ verisi çekiliyor, model eğitiliyor..."):
+    with st.spinner("EPİAŞ verisi çekiliyor, ensemble oluşturuluyor..."):
         try:
             data = run_live_update()
-            st.success("Güncelleme tamamlandı.")
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Hata: {exc}")
-            data = load_dashboard_payload()
+            st.success("✅ Güncelleme tamamlandı!")
+        except Exception as exc:
+            st.error(f"❌ Hata: {exc}")
+            data = load_final_metrics()
 elif refresh:
-    st.warning("EPİAŞ secrets gerekli.")
-    data = load_dashboard_payload()
+    st.warning("⚠️ EPİAŞ secrets gerekli.")
+    data = load_final_metrics()
 else:
-    data = load_dashboard_payload()
+    data = load_final_metrics()
 
-metrics = data.get("metrics", {})
-live_df = pd.DataFrame(data.get("live_forecast", []))
-test_df = pd.DataFrame(data.get("test_predictions", []))
-horizon_df = pd.DataFrame(data.get("horizon_metrics", []))
+# Load data
+final_metrics = data
+final_preds = load_final_predictions()
+final_horizon = load_final_horizon_metrics()
+baseline_horizon = load_baseline_horizon_metrics()
 
+# Load dashboard data for live forecast
+if APP_DATA_PATH.exists():
+    dashboard_data = json.loads(APP_DATA_PATH.read_text(encoding="utf-8"))
+    live_df = pd.DataFrame(dashboard_data.get("live_forecast", []))
+else:
+    live_df = pd.DataFrame()
+
+
+# --- Hero Section ---
 st.markdown(
     """
     <div class="hero">
-      <h1>PTF — Sonraki 12 Saat Tahmini</h1>
-      <p>Son açıklanan kesinleşmemiş PTF (I-MCP) saatinden itibaren gelecek 12 saat için kesinleşmiş PTF (MCP) tahmini.</p>
+      <h1>⚡ PTF 12 Saat Tahmin Sistemi - Ensemble Model</h1>
+      <p>Kesinleşmemiş PTF (I-MCP) kullanarak gelecek 12 saat için kesinleşmiş PTF (MCP) tahmini. Ensemble sistemi ile %46 MAE iyileştirmesi.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-if live_df.empty and test_df.empty:
-    st.warning("Henüz tahmin yok. Terminalde `python main.py` çalıştırın.")
 
-h1_row = horizon_df.loc[horizon_df["forecast_horizon"] == 1].iloc[0] if not horizon_df.empty else None
+# --- Overview Section ---
+if view_mode == "Genel Bakış":
+    st.markdown("## 📈 Genel Performans Özeti")
+    
+    if final_metrics:
+        # Metrics comparison
+        baseline_mae = final_metrics.get("baseline_comparison", {}).get("mae", 0)
+        baseline_rmse = final_metrics.get("baseline_comparison", {}).get("rmse", 0)
+        baseline_smape = final_metrics.get("baseline_comparison", {}).get("smape", 0)
+        baseline_r2 = final_metrics.get("baseline_comparison", {}).get("r2", 0)
+        
+        final_mae = final_metrics.get("MAE", 0)
+        final_rmse = final_metrics.get("RMSE", 0)
+        final_smape = final_metrics.get("SMAPE", 0)
+        final_r2 = final_metrics.get("R2", 0)
+        
+        mae_imp = (baseline_mae - final_mae) / baseline_mae * 100 if baseline_mae > 0 else 0
+        rmse_imp = (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse > 0 else 0
+        smape_imp = (baseline_smape - final_smape) / baseline_smape * 100 if baseline_smape > 0 else 0
+        r2_imp = final_r2 - baseline_r2
+        
+        # Comparison cards
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "MAE",
+                f"{final_mae:.2f} TL",
+                f"{mae_imp:+.1f}%",
+                delta_color="normal" if mae_imp > 0 else "inverse"
+            )
+            st.caption(f"Baseline: {baseline_mae:.2f} TL")
+        
+        with col2:
+            st.metric(
+                "RMSE",
+                f"{final_rmse:.2f} TL",
+                f"{rmse_imp:+.1f}%",
+                delta_color="normal" if rmse_imp > 0 else "inverse"
+            )
+            st.caption(f"Baseline: {baseline_rmse:.2f} TL")
+        
+        with col3:
+            st.metric(
+                "SMAPE",
+                f"{final_smape:.2f}%",
+                f"{smape_imp:+.1f}%",
+                delta_color="normal" if smape_imp > 0 else "inverse"
+            )
+            st.caption(f"Baseline: {baseline_smape:.2f}%")
+        
+        with col4:
+            st.metric(
+                "R²",
+                f"{final_r2:.4f}",
+                f"{r2_imp:+.4f}",
+                delta_color="normal" if r2_imp > 0 else "inverse"
+            )
+            st.caption(f"Baseline: {baseline_r2:.4f}")
+        
+        st.markdown("---")
+        
+        # System info
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info(f"📊 **Veri Seti Boyutu:** {final_preds.shape[0] if not final_preds.empty else 0:,} satır")
+        with col2:
+            st.info(f"🎯 **Model Tipi:** Ensemble + Bias Correction")
+        with col3:
+            if dashboard_data:
+                st.info(f"🕐 **Son Güncelleme:** {dashboard_data.get('generated_at', '-')[:16]}")
+    
+    else:
+        st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
+        st.code("python -c 'from src.build_final_ensemble import build_final_ensemble; build_final_ensemble()'")
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Son I-MCP Saati", str(data.get("cutoff_datetime", "-"))[:16])
-k2.metric("+1 Saat MAE", fmt(h1_row["MAE"]) if h1_row is not None else "-")
-k3.metric("+1 Saat R²", fmt(h1_row["R2"], 3) if h1_row is not None else "-")
-k4.metric("12 Saat Ort. MAE", fmt(metrics.get("MAE")))
-k5.metric("12 Saat Ort. R²", fmt(metrics.get("R2"), 3))
-k6.metric("Güncelleme", str(data.get("generated_at", "-"))[:16])
 
-if view_mode == "Canlı 12 Saat Tahmin":
-    st.subheader("Gelecek 12 Saat — Tahmin Edilen Kesinleşmiş PTF (MCP)")
+# --- Ensemble Details Section ---
+elif view_mode == "Ensemble Detayları":
+    st.markdown("## 🎯 Ensemble Ağırlıkları ve Bias Düzeltmeleri")
+    
+    if final_metrics and "ensemble_weights" in final_metrics:
+        weights = final_metrics["ensemble_weights"]
+        bias = final_metrics["bias_corrections"]
+        
+        # Weight visualization
+        st.markdown("### Horizon Bazlı Ağırlıklar")
+        
+        weight_data = []
+        for horizon in range(1, 13):
+            w = weights.get(horizon, {})
+            weight_data.append({
+                "Horizon": f"{horizon}h",
+                "CatBoost": w.get("pred_catboost", 0) * 100,
+                "Dün Aynı Saat": w.get("pred_same_hour_yesterday", 0) * 100,
+                "Geçen Hafta Aynı Saat": w.get("pred_same_hour_last_week", 0) * 100,
+                "Son 24s Ort": w.get("pred_last_24h_mean", 0) * 100,
+                "Rolling 24s": w.get("pred_rolling_24h", 0) * 100,
+                "Rolling 168s": w.get("pred_rolling_168h", 0) * 100,
+            })
+        
+        weight_df = pd.DataFrame(weight_data)
+        weight_df = weight_df.set_index("Horizon")
+        
+        st.dataframe(weight_df.style.format("{:.1f}%"), use_container_width=True)
+        
+        # Bias correction
+        st.markdown("### Horizon Bazlı Bias Düzeltmeleri")
+        
+        bias_data = []
+        for horizon in range(1, 13):
+            bias_data.append({
+                "Horizon": f"{horizon}h",
+                "Bias Düzeltmesi (TL)": bias.get(horizon, 0)
+            })
+        
+        bias_df = pd.DataFrame(bias_data)
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=bias_df["Horizon"],
+            y=bias_df["Bias Düzeltmesi (TL)"],
+            marker_color="#6366f1"
+        ))
+        fig.update_layout(
+            title="Bias Düzeltmeleri (Negatif = Underprediction düzeltmesi)",
+            xaxis_title="Tahmin Ufku",
+            yaxis_title="Bias (TL)",
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Key insights
+        st.markdown("### 🔍 Temel Bulgular")
+        st.markdown("""
+        - **CatBoost ağırlığı 0%**: Log dönüşümü nedeniyle sistemik underprediction
+        - **Rolling 168h dominant**: Uzun horizonlarda haftalık desenler önemli
+        - **Rolling 24h önemli**: Kısa horizonlarda günlük desenler etkili
+        - **Bias düzeltmeleri negatif**: Sistemik underprediction'ı düzeltiyor
+        """)
+    else:
+        st.warning("⚠️ Ensemble ağırlıkları bulunamadı.")
+
+
+# --- Live Forecast Section ---
+elif view_mode == "Canlı Tahmin":
+    st.markdown("## 🔮 Canlı 12 Saat Tahmini")
+    
     if not live_df.empty:
         live_df["target_datetime"] = pd.to_datetime(live_df["target_datetime"], errors="coerce")
         live_df = live_df.sort_values("forecast_horizon")
-
+        
+        # Cutoff info
+        if dashboard_data:
+            st.info(f"🕐 **Tahmin Başlangıcı:** {dashboard_data.get('cutoff_datetime', '-')}")
+        
+        # Chart
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -198,87 +376,144 @@ if view_mode == "Canlı 12 Saat Tahmin":
                 mode="lines+markers",
                 name="Tahmin PTF",
                 line=dict(color="#0ea5e9", width=3),
-                marker=dict(size=9),
+                marker=dict(size=10),
+                fill='tozeroy',
+                fillcolor='rgba(14, 165, 233, 0.1)'
             )
         )
         fig.update_layout(
-            height=480,
+            title="Gelecek 12 Saat - Tahmin Edilen Kesinleşmiş PTF (MCP)",
             yaxis_title="PTF (TL/MWh)",
             xaxis_title="Saat",
             hovermode="x unified",
-            margin=dict(l=20, r=20, t=30, b=20),
+            height=500,
+            margin=dict(l=20, r=20, t=50, b=20),
         )
         st.plotly_chart(fig, use_container_width=True)
-
+        
+        # Table
         table = live_df.rename(
             columns={
                 "forecast_horizon": "Saat (+)",
                 "target_datetime": "Hedef Zaman",
-                "predicted_ptf": "Tahmin PTF",
+                "predicted_ptf": "Tahmin PTF (TL)",
             }
-        )[["Saat (+)", "Hedef Zaman", "Tahmin PTF"]]
-        st.dataframe(table, use_container_width=True, hide_index=True)
+        )[["Saat (+)", "Hedef Zaman", "Tahmin PTF (TL)"]]
+        st.dataframe(table.style.format({"Tahmin PTF (TL)": "{:.2f}"}), use_container_width=True, hide_index=True)
     else:
-        st.info("Canlı tahmin dosyası yok.")
+        st.warning("⚠️ Canlı tahmin verisi yok. Dashboard snapshot'ı güncelleyin:")
+        st.code("python scripts/update_dashboard_snapshot.py")
 
-else:
-    st.subheader("Test Seti — Gerçek vs Tahmin (son dönem)")
-    if not test_df.empty:
-        test_df["target_datetime"] = pd.to_datetime(test_df["target_datetime"], errors="coerce")
-        recent_issue = test_df["issue_datetime"].max()
-        subset = test_df[test_df["issue_datetime"] == recent_issue].copy()
-        if subset.empty:
-            subset = test_df.sort_values("target_datetime").tail(12)
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.06)
-        fig.add_trace(
-            go.Scatter(
-                x=subset["target_datetime"],
-                y=subset["actual_ptf"],
-                mode="lines+markers",
-                name="Gerçek PTF",
-                line=dict(color="#111827", width=2.5),
-            ),
-            row=1,
-            col=1,
+# --- Performance Analysis Section ---
+elif view_mode == "Performans Analizi":
+    st.markdown("## 📊 Horizon Bazlı Performans Analizi")
+    
+    if not final_horizon.empty and not baseline_horizon.empty:
+        # Merge horizon metrics
+        comparison = baseline_horizon.merge(
+            final_horizon, 
+            on="forecast_horizon", 
+            suffixes=("_baseline", "_final")
         )
-        fig.add_trace(
-            go.Scatter(
-                x=subset["target_datetime"],
-                y=subset["predicted_ptf"],
-                mode="lines+markers",
-                name="Tahmin PTF",
-                line=dict(color="#0ea5e9", width=2.5),
-            ),
-            row=1,
-            col=1,
+        comparison["mae_improvement"] = (comparison["MAE_baseline"] - comparison["MAE_final"]) / comparison["MAE_baseline"] * 100
+        comparison["r2_improvement"] = comparison["R2_final"] - comparison["R2_baseline"]
+        
+        # MAE comparison chart
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=comparison["forecast_horizon"],
+            y=comparison["MAE_baseline"],
+            name="Baseline (CatBoost)",
+            marker_color="#94a3b8"
+        ))
+        fig.add_trace(go.Bar(
+            x=comparison["forecast_horizon"],
+            y=comparison["MAE_final"],
+            name="Final Ensemble",
+            marker_color="#10b981"
+        ))
+        fig.update_layout(
+            title="MAE Karşılaştırması - Horizon Bazında",
+            xaxis_title="Tahmin Ufku (Saat)",
+            yaxis_title="MAE (TL/MWh)",
+            barmode="group",
+            height=450
         )
-        fig.add_trace(
-            go.Bar(
-                x=subset["target_datetime"],
-                y=subset["absolute_error"],
-                name="Mutlak Hata",
-                marker_color="rgba(239,68,68,0.5)",
-            ),
-            row=2,
-            col=1,
-        )
-        fig.update_layout(height=560, yaxis_title="PTF", yaxis2_title="Hata")
         st.plotly_chart(fig, use_container_width=True)
-
-        if not horizon_df.empty:
-            st.subheader("Saat Ufku Bazında Hata (MAE)")
-            hfig = go.Figure()
-            hfig.add_bar(
-                x=horizon_df["forecast_horizon"],
-                y=horizon_df["MAE"],
-                marker_color="#6366f1",
-            )
-            hfig.update_layout(
-                xaxis_title="Tahmin ufku (saat)",
-                yaxis_title="MAE (TL/MWh)",
-                height=320,
-            )
-            st.plotly_chart(hfig, use_container_width=True)
+        
+        # R² comparison chart
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=comparison["forecast_horizon"],
+            y=comparison["R2_baseline"],
+            name="Baseline (CatBoost)",
+            marker_color="#94a3b8"
+        ))
+        fig2.add_trace(go.Bar(
+            x=comparison["forecast_horizon"],
+            y=comparison["R2_final"],
+            name="Final Ensemble",
+            marker_color="#10b981"
+        ))
+        fig2.update_layout(
+            title="R² Karşılaştırması - Horizon Bazında",
+            xaxis_title="Tahmin Ufku (Saat)",
+            yaxis_title="R²",
+            barmode="group",
+            height=450
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        # Improvement table
+        st.markdown("### İyileştirme Tablosu")
+        improvement_table = comparison[[
+            "forecast_horizon", 
+            "MAE_baseline", 
+            "MAE_final", 
+            "mae_improvement",
+            "R2_baseline",
+            "R2_final",
+            "r2_improvement"
+        ]].rename(columns={
+            "forecast_horizon": "Horizon (h)",
+            "MAE_baseline": "Baseline MAE",
+            "MAE_final": "Ensemble MAE",
+            "mae_improvement": "MAE İyileştirme (%)",
+            "R2_baseline": "Baseline R²",
+            "R2_final": "Ensemble R²",
+            "r2_improvement": "R² İyileştirme"
+        })
+        
+        def highlight_positive(val):
+            color = '#d4edda' if val > 0 else '#f8d7da'
+            return f'background-color: {color}'
+        
+        st.dataframe(
+            improvement_table.style.format({
+                "Baseline MAE": "{:.2f}",
+                "Ensemble MAE": "{:.2f}",
+                "MAE İyileştirme (%)": "{:.1f}",
+                "Baseline R²": "{:.4f}",
+                "Ensemble R²": "{:.4f}",
+                "R² İyileştirme": "{:.4f}"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Key findings
+        st.markdown("### 🔍 Performans Bulguları")
+        best_horizon = comparison.loc[comparison["mae_improvement"].idxmax()]
+        worst_horizon = comparison.loc[comparison["mae_improvement"].idxmin()]
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success(f"**En İyi Horizon:** {best_horizon['forecast_horizon']}h")
+            st.caption(f"MAE İyileştirme: {best_horizon['mae_improvement']:.1f}%")
+        with col2:
+            st.info(f"En Kötü Horizon: {worst_horizon['forecast_horizon']}h")
+            st.caption(f"MAE İyileştirme: {worst_horizon['mae_improvement']:.1f}%")
+        
     else:
-        st.info("Test tahmin dosyası yok. `python main.py` çalıştırın.")
+        st.warning("⚠️ Horizon metrikleri bulunamadı.")
