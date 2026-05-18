@@ -8,18 +8,14 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from src.build_12h_forecast_dataset import SEASONAL_ANCHOR_COLUMN
 from src.catboost_tuning import (
     fit_tuned_catboost_regressor,
     predict_with_optional_log_transform,
 )
-
-FAST_TUNING_CANDIDATES = (
-    {"depth": 7, "learning_rate": 0.03, "l2_leaf_reg": 5, "min_data_in_leaf": 30},
-    {"depth": 8, "learning_rate": 0.02, "l2_leaf_reg": 8, "min_data_in_leaf": 25},
-    {"depth": 6, "learning_rate": 0.025, "l2_leaf_reg": 6, "min_data_in_leaf": 40},
-)
 from src.config import PROJECT_ROOT
 from src.model_splits import chronological_train_val_test_split, project_relative_path
+from src.ptf_feature_enrichment import enrich_forecast_features, recency_sample_weights
 
 
 DATA_PATH = PROJECT_ROOT / "data" / "processed" / "forecast_12h_dataset.csv"
@@ -30,14 +26,28 @@ MODEL_BUNDLE_PATH = PROJECT_ROOT / "data" / "models" / "ptf_12h_horizon_models.p
 LIVE_FORECAST_PATH = PROJECT_ROOT / "data" / "processed" / "ptf_12h_live_forecast.csv"
 
 TARGET_COLUMN = "ptf_target"
+RESIDUAL_TARGET_COLUMN = "ptf_target_residual"
+DELTA_TARGET_COLUMN = "ptf_target_delta"
+INTERIM_ANCHOR_COLUMN = "interim_anchor"
 ID_COLUMNS = [
     "issue_datetime",
     "target_datetime",
     "forecast_horizon",
     TARGET_COLUMN,
+    RESIDUAL_TARGET_COLUMN,
+    DELTA_TARGET_COLUMN,
+    SEASONAL_ANCHOR_COLUMN,
+    INTERIM_ANCHOR_COLUMN,
 ]
-USE_LOG_TARGET = True
+USE_RESIDUAL_TARGET = True
+USE_LOG_TARGET = False
 EPSILON = 1.0
+
+TUNING_CANDIDATES = (
+    {"depth": 7, "learning_rate": 0.03, "l2_leaf_reg": 6, "min_data_in_leaf": 20},
+    {"depth": 8, "learning_rate": 0.022, "l2_leaf_reg": 9, "min_data_in_leaf": 18},
+    {"depth": 8, "learning_rate": 0.018, "l2_leaf_reg": 11, "min_data_in_leaf": 22},
+)
 
 
 @dataclass(frozen=True)
@@ -54,7 +64,7 @@ class Ptf12hTrainingSummary:
 
 
 def train_ptf_12h_forecast() -> Ptf12hTrainingSummary:
-    data = _read_dataset()
+    data = enrich_forecast_features(_read_dataset())
     feature_columns = _feature_columns(data)
 
     models: dict[int, object] = {}
@@ -66,8 +76,10 @@ def train_ptf_12h_forecast() -> Ptf12hTrainingSummary:
         horizon_data = horizon_data.sort_values("issue_datetime").reset_index(drop=True)
         train_df, val_df, test_df = chronological_train_val_test_split(horizon_data)
 
-        y_train = _transform_target(train_df[TARGET_COLUMN])
-        y_val = _transform_target(val_df[TARGET_COLUMN])
+        train_target_col = _training_target_column(train_df)
+        y_train = _transform_target(train_df[train_target_col])
+        y_val = _transform_target(val_df[train_target_col])
+        train_weights = recency_sample_weights(train_df["issue_datetime"])
 
         model, tuning_info = fit_tuned_catboost_regressor(
             train_df[feature_columns],
@@ -75,15 +87,17 @@ def train_ptf_12h_forecast() -> Ptf12hTrainingSummary:
             val_df[feature_columns],
             y_val,
             verbose=0,
-            param_candidates=FAST_TUNING_CANDIDATES,
+            param_candidates=TUNING_CANDIDATES,
+            sample_weight=train_weights,
         )
         models[horizon] = model
         tuning_reports[horizon] = tuning_info
 
-        preds = predict_with_optional_log_transform(
+        residual_preds = predict_with_optional_log_transform(
             model, test_df[feature_columns], use_log_target=USE_LOG_TARGET
         )
-        frame = test_df[ID_COLUMNS].copy()
+        preds = _to_kesinlesmis_prediction(test_df, residual_preds)
+        frame = test_df[[c for c in ID_COLUMNS if c in test_df.columns]].copy()
         frame["predicted_ptf"] = preds
         frame["actual_ptf"] = test_df[TARGET_COLUMN].to_numpy()
         frame["absolute_error"] = np.abs(frame["actual_ptf"] - frame["predicted_ptf"])
@@ -105,6 +119,7 @@ def train_ptf_12h_forecast() -> Ptf12hTrainingSummary:
         "rows": int(len(data)),
         "feature_count": len(feature_columns),
         "use_log_target": USE_LOG_TARGET,
+        "use_residual_target": USE_RESIDUAL_TARGET,
         "tuning_by_horizon": tuning_reports,
     }
     METRICS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -116,6 +131,7 @@ def train_ptf_12h_forecast() -> Ptf12hTrainingSummary:
                 "models": models,
                 "feature_columns": feature_columns,
                 "use_log_target": USE_LOG_TARGET,
+                "use_residual_target": USE_RESIDUAL_TARGET,
             },
             file,
         )
@@ -146,6 +162,7 @@ def predict_live_next_12h(
         _load_forecast_at,
         _read_hourly_dataset,
         _target_calendar_features,
+        _value_at,
     )
 
     if models is None or feature_columns is None:
@@ -171,6 +188,17 @@ def predict_live_next_12h(
     rows: list[dict] = []
     for horizon in range(1, FORECAST_HORIZON_HOURS + 1):
         target_datetime = cutoff + pd.Timedelta(hours=horizon)
+        kesin_seasonal_anchor = _value_at(
+            by_datetime,
+            target_datetime - pd.Timedelta(hours=24),
+            "ptf_kesinlesmis",
+        )
+        kesin_at_target_week = _value_at(
+            by_datetime,
+            target_datetime - pd.Timedelta(hours=168),
+            "ptf_kesinlesmis",
+        )
+
         row = {
             "issue_datetime": cutoff,
             "target_datetime": target_datetime,
@@ -180,22 +208,31 @@ def predict_live_next_12h(
             "load_forecast_plan_target_hour": _load_forecast_at(
                 by_datetime, target_datetime, cutoff
             ),
+            SEASONAL_ANCHOR_COLUMN: kesin_seasonal_anchor,
+            "kesin_at_target_week_ago": kesin_at_target_week,
+            INTERIM_ANCHOR_COLUMN: float(base_features.get("ptf_lag_1", np.nan)),
         }
-        feature_row = pd.DataFrame([row])
+        feature_row = enrich_forecast_features(pd.DataFrame([row]))
         for column in feature_columns:
             if column not in feature_row.columns:
                 feature_row[column] = np.nan
 
         model = models[horizon]
-        pred = predict_with_optional_log_transform(
+        residual_pred = predict_with_optional_log_transform(
             model, feature_row[feature_columns], use_log_target=use_log
         )[0]
+        kesin_pred = max(
+            0.0,
+            float(_to_kesinlesmis_prediction(feature_row, np.array([residual_pred]))[0]),
+        )
         rows.append(
             {
                 "issue_datetime": cutoff,
                 "target_datetime": target_datetime,
                 "forecast_horizon": horizon,
-                "predicted_ptf": float(pred),
+                "predicted_ptf": kesin_pred,
+                SEASONAL_ANCHOR_COLUMN: kesin_seasonal_anchor,
+                INTERIM_ANCHOR_COLUMN: float(base_features.get("ptf_lag_1", np.nan)),
             }
         )
 
@@ -211,6 +248,24 @@ def _read_dataset() -> pd.DataFrame:
     return data.dropna(subset=["issue_datetime", "target_datetime", TARGET_COLUMN]).reset_index(drop=True)
 
 
+def _training_target_column(data: pd.DataFrame) -> str:
+    if USE_RESIDUAL_TARGET and RESIDUAL_TARGET_COLUMN in data.columns:
+        return RESIDUAL_TARGET_COLUMN
+    if DELTA_TARGET_COLUMN in data.columns:
+        return DELTA_TARGET_COLUMN
+    return TARGET_COLUMN
+
+
+def _to_kesinlesmis_prediction(frame: pd.DataFrame, residual_preds: np.ndarray) -> np.ndarray:
+    if USE_RESIDUAL_TARGET and SEASONAL_ANCHOR_COLUMN in frame.columns:
+        anchor = frame[SEASONAL_ANCHOR_COLUMN].to_numpy(dtype=float)
+        return np.maximum(0.0, anchor + np.asarray(residual_preds, dtype=float))
+    if INTERIM_ANCHOR_COLUMN in frame.columns:
+        anchor = frame[INTERIM_ANCHOR_COLUMN].to_numpy(dtype=float)
+        return np.maximum(0.0, anchor + np.asarray(residual_preds, dtype=float))
+    return np.maximum(0.0, np.asarray(residual_preds, dtype=float))
+
+
 def _feature_columns(data: pd.DataFrame) -> list[str]:
     id_set = set(ID_COLUMNS)
     columns = [column for column in data.columns if column not in id_set]
@@ -223,7 +278,10 @@ def _feature_columns(data: pd.DataFrame) -> list[str]:
 
 
 def _transform_target(target: pd.Series) -> pd.Series:
-    return np.log1p(target.astype(float))
+    values = target.astype(float)
+    if USE_LOG_TARGET:
+        return np.log1p(values)
+    return values
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

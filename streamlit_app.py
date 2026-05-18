@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -22,6 +23,7 @@ FINAL_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
 FINAL_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
 BASELINE_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_horizon_metrics.csv"
 LIVE_FORECAST_PATH = PROCESSED / "ptf_12h_live_forecast.csv"
+LIVE_BUNDLE_PATH = PROCESSED / "ptf_12h_live_bundle.csv"
 
 
 st.set_page_config(
@@ -186,6 +188,19 @@ def load_live_forecast_csv() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_live_bundle() -> pd.DataFrame:
+    df = read_csv(LIVE_BUNDLE_PATH)
+    if df.empty:
+        return df
+    for c in ("issue_datetime", "target_datetime"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    if "forecast_horizon" in df.columns:
+        df["forecast_horizon"] = pd.to_numeric(df["forecast_horizon"], errors="coerce")
+    return df.sort_values("forecast_horizon")
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_final_predictions_prepared() -> pd.DataFrame:
     """
@@ -224,8 +239,6 @@ def run_live_update() -> dict:
     from src.run_ptf_pipeline import run_full_ptf_pipeline
 
     run_full_ptf_pipeline(fetch_live=True)
-    from scripts.update_dashboard_snapshot import update_dashboard_snapshot
-    update_dashboard_snapshot()
     return load_final_metrics()
 
 
@@ -466,7 +479,7 @@ if view_mode == "Genel Bakış":
     
     else:
         st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
-        st.code("python -c 'from src.build_final_ensemble import build_final_ensemble; build_final_ensemble()'")
+        st.code("python main.py")
 
 
 # --- Data Section ---
@@ -578,115 +591,111 @@ elif view_mode == "Ensemble Detayları":
 # --- Live Forecast Section ---
 elif view_mode == "Canlı Tahmin":
     st.markdown("## 🔮 Canlı 12 Saat Tahmini")
-    
-    # 1) Snapshot (app_data) varsa onu oku; bazen tek satir gelebiliyor.
-    if not live_df.empty:
-        for c in ("issue_datetime", "target_datetime"):
-            if c in live_df.columns:
-                live_df[c] = pd.to_datetime(live_df[c], errors="coerce")
-        live_df = live_df.sort_values("forecast_horizon")
+    st.caption("Kesim anındaki I-MCP, naive baseline, CatBoost ve final ensemble birlikte gösterilir.")
 
-    # 2) Snapshot bos veya eksikse (12 satirdan az), processed live forecast'tan tamamla.
-    if live_df.empty or len(live_df) < 12:
-        fallback = load_live_forecast_csv()
-        if not fallback.empty and "issue_datetime" in fallback.columns:
-            latest_issue = fallback["issue_datetime"].max()
-            fallback = fallback[fallback["issue_datetime"] == latest_issue].copy()
-            fallback = fallback.sort_values("forecast_horizon")
-            if len(fallback) >= 12:
-                live_df = fallback.head(12).copy()
+    live_bundle = load_live_bundle()
+    if live_bundle.empty and not live_df.empty:
+        rename_map = {}
+        if "predicted_ptf" in live_df.columns and "ensemble_ptf" not in live_df.columns:
+            rename_map["predicted_ptf"] = "ensemble_ptf"
+        live_bundle = live_df.rename(columns=rename_map)
 
-    if not live_df.empty:
-        cutoff_display = None
-        if dashboard_data and dashboard_data.get("cutoff_datetime"):
-            cutoff_display = dashboard_data.get("cutoff_datetime")
-        elif "issue_datetime" in live_df.columns and not live_df["issue_datetime"].isna().all():
-            cutoff_display = str(live_df["issue_datetime"].max())
+    if live_bundle.empty or len(live_bundle) < 12:
+        if not final_dataset.empty:
+            naive_only = build_naive_live_forecast(final_dataset, horizons=12)
+            if not naive_only.empty:
+                cutoff_dt = final_dataset.dropna(subset=["datetime", "ptf"])["datetime"].max()
+                interim = float(
+                    final_dataset.loc[final_dataset["datetime"] == cutoff_dt, "ptf"].iloc[0]
+                )
+                live_bundle = naive_only.copy()
+                live_bundle["issue_datetime"] = cutoff_dt
+                live_bundle["interim_ptf"] = interim
+                live_bundle["naive_ptf"] = live_bundle["predicted_ptf"]
+                live_bundle["ensemble_ptf"] = live_bundle["predicted_ptf"]
+                live_bundle["catboost_ptf"] = np.nan
+
+    if not live_bundle.empty:
+        cutoff_display = dashboard_data.get("cutoff_datetime") if dashboard_data else None
+        if not cutoff_display and "issue_datetime" in live_bundle.columns:
+            cutoff_display = str(live_bundle["issue_datetime"].max())
         if cutoff_display:
-            st.info(f"🕐 **Tahmin Başlangıcı:** {cutoff_display}")
+            st.info(f"🕐 **Kesim (son I-MCP saati):** {cutoff_display}")
 
-        live_df["target_datetime"] = pd.to_datetime(live_df["target_datetime"], errors="coerce")
-        live_df = live_df.sort_values("forecast_horizon")
+        if "interim_ptf" in live_bundle.columns and live_bundle["interim_ptf"].notna().any():
+            st.metric(
+                "Son I-MCP (TL/MWh)",
+                f"{live_bundle['interim_ptf'].iloc[0]:,.2f}",
+            )
 
+        live_bundle = live_bundle.sort_values("forecast_horizon")
         fig = go.Figure()
+        if "interim_ptf" in live_bundle.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=live_bundle["target_datetime"],
+                    y=[live_bundle["interim_ptf"].iloc[0]] * len(live_bundle),
+                    mode="lines",
+                    name="I-MCP (kesim)",
+                    line=dict(color="#94a3b8", width=2, dash="dot"),
+                )
+            )
+        if "naive_ptf" in live_bundle.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=live_bundle["target_datetime"],
+                    y=live_bundle["naive_ptf"],
+                    mode="lines+markers",
+                    name="Naive",
+                    line=dict(color="#f97316", width=2),
+                )
+            )
+        if "catboost_ptf" in live_bundle.columns and live_bundle["catboost_ptf"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=live_bundle["target_datetime"],
+                    y=live_bundle["catboost_ptf"],
+                    mode="lines+markers",
+                    name="CatBoost (delta)",
+                    line=dict(color="#a855f7", width=2, dash="dash"),
+                )
+            )
+        ensemble_col = "ensemble_ptf" if "ensemble_ptf" in live_bundle.columns else "predicted_ptf"
         fig.add_trace(
             go.Scatter(
-                x=live_df["target_datetime"],
-                y=live_df["predicted_ptf"],
+                x=live_bundle["target_datetime"],
+                y=live_bundle[ensemble_col],
                 mode="lines+markers",
-                name="Final Tahmin (Ensemble)",
+                name="Ensemble (final)",
                 line=dict(color="#0ea5e9", width=3),
-                marker=dict(size=10),
-                fill="tozeroy",
-                fillcolor="rgba(14, 165, 233, 0.1)",
+                marker=dict(size=9),
             )
         )
         fig.update_layout(
-            title="Latest Issue - Gelecek 12 Saat Tahmin (Final Ensemble)",
+            title="Gelecek 12 Saat — I-MCP / Naive / CatBoost / Ensemble",
             yaxis_title="PTF (TL/MWh)",
-            xaxis_title="Saat",
+            xaxis_title="Hedef saat",
             hovermode="x unified",
-            height=500,
+            height=520,
             margin=dict(l=20, r=20, t=50, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        table = live_df.rename(
-            columns={
-                "forecast_horizon": "Saat (+)",
-                "target_datetime": "Hedef Zaman",
-                "predicted_ptf": "Tahmin PTF (TL)",
-            }
-        )[["Saat (+)", "Hedef Zaman", "Tahmin PTF (TL)"]]
-        st.dataframe(
-            table.style.format({"Tahmin PTF (TL)": "{:.2f}"}),
-            use_container_width=True,
-            hide_index=True,
-        )
+        table_cols = {
+            "forecast_horizon": "Saat (+)",
+            "target_datetime": "Hedef Zaman",
+            "interim_ptf": "I-MCP (kesim)",
+            "naive_ptf": "Naive",
+            "catboost_ptf": "CatBoost",
+            ensemble_col: "Ensemble",
+        }
+        show_cols = [c for c in table_cols if c in live_bundle.columns]
+        table = live_bundle[show_cols].rename(columns=table_cols)
+        fmt = {v: "{:.2f}" for v in table_cols.values() if v != "Hedef Zaman" and v != "Saat (+)"}
+        st.dataframe(table.style.format(fmt), use_container_width=True, hide_index=True)
     else:
-        if final_dataset.empty:
-            st.warning("⚠️ Canlı tahmin için gerekli veriler yok. Önce **Veriyi Güncelle** ile veri çekin.")
-        else:
-            st.info("Snapshot bulunamadı. Panel içinde hızlı bir baseline tahmin ürettim (model çalıştırmadan).")
-            naive = build_naive_live_forecast(final_dataset, horizons=12)
-            if naive.empty:
-                st.warning("Baseline tahmin üretilemedi.")
-            else:
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=naive["target_datetime"],
-                        y=naive["predicted_ptf"],
-                        mode="lines+markers",
-                        name="Tahmin (Baseline)",
-                        line=dict(color="#f97316", width=3),
-                        marker=dict(size=9),
-                        fill="tozeroy",
-                        fillcolor="rgba(249, 115, 22, 0.12)",
-                    )
-                )
-                fig.update_layout(
-                    title="Gelecek 12 Saat - Baseline Tahmin (Panel İçi)",
-                    yaxis_title="PTF (TL/MWh)",
-                    xaxis_title="Saat",
-                    hovermode="x unified",
-                    height=500,
-                    margin=dict(l=20, r=20, t=50, b=20),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                table = naive.rename(
-                    columns={
-                        "forecast_horizon": "Saat (+)",
-                        "target_datetime": "Hedef Zaman",
-                        "predicted_ptf": "Tahmin PTF (TL)",
-                    }
-                )[["Saat (+)", "Hedef Zaman", "Tahmin PTF (TL)"]]
-                st.dataframe(
-                    table.style.format({"Tahmin PTF (TL)": "{:.2f}"}),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+        st.warning("⚠️ Canlı tahmin yok. Sidebar'dan **Veriyi Güncelle** ile pipeline çalıştırın.")
 
 
 # --- Performance Analysis Section ---

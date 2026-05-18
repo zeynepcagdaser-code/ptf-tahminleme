@@ -28,6 +28,7 @@ def fit_tuned_catboost_regressor(
     random_seed: int = 42,
     verbose: int = 0,
     param_candidates: tuple[dict[str, Any], ...] | None = None,
+    sample_weight: np.ndarray | None = None,
 ) -> tuple[CatBoostRegressor, dict[str, Any]]:
     candidates = param_candidates or DEFAULT_PARAM_CANDIDATES
     best_model: CatBoostRegressor | None = None
@@ -36,7 +37,7 @@ def fit_tuned_catboost_regressor(
 
     for params in candidates:
         model = CatBoostRegressor(
-            iterations=2500,
+            iterations=1200,
             loss_function=loss_function,
             random_seed=random_seed,
             subsample=0.85,
@@ -47,13 +48,14 @@ def fit_tuned_catboost_regressor(
             verbose=verbose,
             **params,
         )
-        model.fit(
-            train_features,
-            train_target,
-            eval_set=(val_features, val_target),
-            use_best_model=True,
-            early_stopping_rounds=100,
-        )
+        fit_kwargs: dict[str, Any] = {
+            "eval_set": (val_features, val_target),
+            "use_best_model": True,
+            "early_stopping_rounds": 100,
+        }
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = sample_weight
+        model.fit(train_features, train_target, **fit_kwargs)
         predictions = model.predict(val_features)
         rmse = float(np.sqrt(mean_squared_error(val_target, predictions)))
         if rmse < best_rmse:

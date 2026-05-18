@@ -6,8 +6,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from src.ptf_seasonal_baselines import prepare_kesin_hourly, seasonal_predictions_for_target
 
 from src.config import PROJECT_ROOT
 from src.model_splits import chronological_train_val_test_split, project_relative_path
@@ -27,6 +29,15 @@ BASELINE_METRICS_PATH = PROJECT_ROOT / "data" / "processed" / "ptf_12h_metrics.j
 TARGET_COLUMN = "ptf_target"
 ID_COLUMNS = ["issue_datetime", "target_datetime", "forecast_horizon", TARGET_COLUMN]
 EPSILON = 1.0
+
+# CatBoost + kesinlesmis mevsimsel kaynaklar (yinelenen kolon yok)
+ENSEMBLE_SOURCE_COLS = (
+    "pred_catboost",
+    "pred_seasonal_blend",
+    "pred_kesin_same_hour_yesterday",
+    "pred_kesin_same_hour_last_week",
+    "pred_kesin_rolling_168h",
+)
 
 
 @dataclass(frozen=True)
@@ -63,68 +74,81 @@ def build_final_ensemble() -> FinalEnsembleSummary:
     
     # Merge all predictions
     all_preds = forecast_data[ID_COLUMNS].copy()
+    if "ptf_lag_1" in forecast_data.columns:
+        all_preds["pred_persistence"] = forecast_data["ptf_lag_1"]
+    if "kesin_seasonal_anchor" in forecast_data.columns:
+        all_preds["pred_dataset_seasonal"] = forecast_data["kesin_seasonal_anchor"]
     all_preds = all_preds.merge(catboost_preds, on=ID_COLUMNS[:3], how="left")
     all_preds = all_preds.merge(simple_preds, on=ID_COLUMNS[:3], how="left")
     
-    # Optimize ensemble weights per horizon
-    ensemble_weights = {}
-    bias_corrections = {}
-    clip_bounds = {}
-    
+    ensemble_weights: dict[int, dict[str, float]] = {}
+    blend_weights: dict[int, float] = {}
+    bias_corrections: dict[int, float] = {}
+    clip_bounds: dict[int, dict[str, float]] = {}
+
     for horizon in range(1, 13):
         print(f"\n=== Optimizing ensemble for horizon {horizon}h ===")
         horizon_data = all_preds[all_preds["forecast_horizon"] == horizon].copy()
         horizon_data = horizon_data.sort_values("issue_datetime").reset_index(drop=True)
-        
-        # Split into train/val/test
-        train_df, val_df, test_df = chronological_train_val_test_split(horizon_data)
-        
-        # Get prediction columns
-        pred_cols = [col for col in all_preds.columns if col.startswith("pred_")]
-        
-        # Optimize weights on validation set
-        weights, bias = _optimize_ensemble_weights(val_df, pred_cols)
+
+        _, val_df, _ = chronological_train_val_test_split(horizon_data)
+        pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in horizon_data.columns]
+
+        weights, bias = _fit_stacked_ensemble(val_df, pred_cols)
+        catboost_w, blend_bias = _fit_catboost_seasonal_blend(val_df)
         ensemble_weights[horizon] = weights
-        bias_corrections[horizon] = bias
-        
-        # Calculate clip bounds from validation predictions
-        val_preds = _apply_ensemble(val_df, pred_cols, weights, bias)
-        val_preds = val_preds[~np.isnan(val_preds)]  # Remove NaN for percentile calculation
+        blend_weights[horizon] = catboost_w
+        bias_corrections[horizon] = blend_bias
+
+        val_hybrid = np.nan_to_num(_hybrid_prediction(val_df, catboost_w, blend_bias), nan=0.0)
+        val_stacked = np.nan_to_num(_apply_ensemble(val_df, pred_cols, weights, bias), nan=0.0)
+        y_val = val_df[TARGET_COLUMN].to_numpy()
+        use_hybrid = mean_absolute_error(y_val, val_hybrid) <= mean_absolute_error(
+            y_val, val_stacked
+        )
+        ensemble_weights[horizon]["_use_hybrid"] = 1.0 if use_hybrid else 0.0
+
+        val_preds = val_hybrid if use_hybrid else val_stacked
+        val_preds = val_preds[~np.isnan(val_preds)]
         if len(val_preds) > 0:
             clip_bounds[horizon] = {
-                "lower": max(0, np.percentile(val_preds, 1)),  # Clip to at least 0
-                "upper": np.percentile(val_preds, 99),  # Clip extreme high values
+                "lower": max(0.0, float(np.percentile(val_preds, 1))),
+                "upper": float(np.percentile(val_preds, 99)),
             }
         else:
-            # Fallback bounds if no valid predictions
-            clip_bounds[horizon] = {"lower": 0, "upper": 5000}
-        
-        print(f"  Weights: {weights}")
-        print(f"  Bias correction: {bias:.2f}")
-        print(f"  Clip bounds: [{clip_bounds[horizon]['lower']:.2f}, {clip_bounds[horizon]['upper']:.2f}]")
-    
-    # Apply ensemble to all data
+            clip_bounds[horizon] = {"lower": 0.0, "upper": 5000.0}
+
+        print(f"  CatBoost blend weight: {catboost_w:.2f}")
+        print(f"  Use hybrid blend: {use_hybrid}")
+
     final_predictions = []
     for horizon in range(1, 13):
         horizon_data = all_preds[all_preds["forecast_horizon"] == horizon].copy()
-        pred_cols = [col for col in all_preds.columns if col.startswith("pred_")]
-        
-        # Apply ensemble
-        ensemble_pred = _apply_ensemble(horizon_data, pred_cols, ensemble_weights[horizon], bias_corrections[horizon])
-        
-        # Replace NaN with CatBoost prediction as fallback
-        catboost_fallback = horizon_data["pred_catboost"].fillna(horizon_data[TARGET_COLUMN].mean())
-        ensemble_pred = np.where(np.isnan(ensemble_pred), catboost_fallback, ensemble_pred)
-        
-        # Apply clipping
+        pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in horizon_data.columns]
+
+        if ensemble_weights[horizon].get("_use_hybrid", 0) >= 0.5:
+            ensemble_pred = _hybrid_prediction(
+                horizon_data, blend_weights[horizon], bias_corrections[horizon]
+            )
+        else:
+            ensemble_pred = _apply_ensemble(
+                horizon_data, pred_cols, ensemble_weights[horizon], bias_corrections[horizon]
+            )
+
+        seasonal = horizon_data["pred_seasonal_blend"].fillna(horizon_data["pred_catboost"])
+        catboost = horizon_data["pred_catboost"].fillna(seasonal)
+        ensemble_pred = np.where(np.isnan(ensemble_pred), catboost, ensemble_pred)
+
         ensemble_pred = np.clip(
             ensemble_pred,
             clip_bounds[horizon]["lower"],
             clip_bounds[horizon]["upper"],
         )
-        
+
         horizon_data["final_predicted_ptf"] = ensemble_pred
-        horizon_data["absolute_error"] = np.abs(horizon_data[TARGET_COLUMN] - horizon_data["final_predicted_ptf"])
+        horizon_data["absolute_error"] = np.abs(
+            horizon_data[TARGET_COLUMN] - horizon_data["final_predicted_ptf"]
+        )
         final_predictions.append(horizon_data)
     
     final_df = pd.concat(final_predictions, ignore_index=True)
@@ -158,6 +182,7 @@ def build_final_ensemble() -> FinalEnsembleSummary:
             "r2": baseline_metrics.get("R2"),
         },
         "ensemble_weights": ensemble_weights,
+        "blend_weights": blend_weights,
         "bias_corrections": bias_corrections,
         "clip_bounds": clip_bounds,
     }
@@ -225,118 +250,99 @@ def _read_catboost_predictions() -> pd.DataFrame:
 
 
 def _create_simple_baselines(forecast_data: pd.DataFrame, hourly_data: pd.DataFrame) -> pd.DataFrame:
-    """Create simple baseline predictions using hourly data."""
-    hourly = hourly_data.set_index("datetime").sort_index()
-    
-    # Calculate rolling statistics
-    hourly["rolling_24h_mean"] = hourly["ptf"].rolling(window=24, min_periods=1).mean()
-    hourly["rolling_168h_mean"] = hourly["ptf"].rolling(window=168, min_periods=1).mean()
-    
-    # Create baseline predictions for each forecast row
+    """Kesinlesmis PTF mevsimsel baseline'lari (hedef saate gore)."""
+    hourly = prepare_kesin_hourly(hourly_data)
+
     baselines = []
     for _, row in forecast_data.iterrows():
         issue_dt = row["issue_datetime"]
-        
-        # Same hour yesterday
-        same_hour_yesterday_dt = issue_dt - pd.Timedelta(hours=24)
-        pred_same_hour_yesterday = _get_value_at(hourly, same_hour_yesterday_dt, "ptf")
-        
-        # Same hour last week
-        same_hour_last_week_dt = issue_dt - pd.Timedelta(hours=168)
-        pred_same_hour_last_week = _get_value_at(hourly, same_hour_last_week_dt, "ptf")
-        
-        # Last 24h mean
-        last_24h_start = issue_dt - pd.Timedelta(hours=24)
-        last_24h_end = issue_dt
-        last_24h_data = hourly.loc[(hourly.index >= last_24h_start) & (hourly.index < last_24h_end), "ptf"]
-        pred_last_24h_mean = last_24h_data.mean() if len(last_24h_data) > 0 else np.nan
-        
-        # Rolling 24h mean
-        pred_rolling_24h = _get_value_at(hourly, issue_dt, "rolling_24h_mean")
-        
-        # Rolling 168h mean
-        pred_rolling_168h = _get_value_at(hourly, issue_dt, "rolling_168h_mean")
-        
-        baselines.append({
-            "issue_datetime": issue_dt,
-            "target_datetime": row["target_datetime"],
-            "forecast_horizon": row["forecast_horizon"],
-            "pred_same_hour_yesterday": pred_same_hour_yesterday,
-            "pred_same_hour_last_week": pred_same_hour_last_week,
-            "pred_last_24h_mean": pred_last_24h_mean,
-            "pred_rolling_24h": pred_rolling_24h,
-            "pred_rolling_168h": pred_rolling_168h,
-        })
-    
+        target_dt = row["target_datetime"]
+        seasonal = seasonal_predictions_for_target(hourly, issue_dt, target_dt)
+
+        baselines.append(
+            {
+                "issue_datetime": issue_dt,
+                "target_datetime": target_dt,
+                "forecast_horizon": row["forecast_horizon"],
+                **seasonal,
+                # Geriye uyumluluk (eski kolon adlari)
+                "pred_same_hour_yesterday": seasonal["pred_kesin_same_hour_yesterday"],
+                "pred_same_hour_last_week": seasonal["pred_kesin_same_hour_last_week"],
+                "pred_last_24h_mean": seasonal["pred_kesin_last_24h_mean"],
+                "pred_rolling_24h": seasonal["pred_kesin_rolling_24h"],
+                "pred_rolling_168h": seasonal["pred_kesin_rolling_168h"],
+            }
+        )
+
     return pd.DataFrame(baselines)
 
 
-def _get_value_at(df: pd.DataFrame, timestamp: pd.Timestamp, column: str) -> float:
-    """Get value at specific timestamp, return NaN if not found."""
-    try:
-        if timestamp in df.index:
-            value = df.loc[timestamp, column]
-            return float(value) if not pd.isna(value) else np.nan
-    except (KeyError, TypeError):
-        pass
-    return np.nan
-
-
-def _optimize_ensemble_weights(val_df: pd.DataFrame, pred_cols: list[str]) -> tuple[dict[str, float], float]:
-    """Optimize ensemble weights to minimize MAE on validation set."""
-    
-    # Get available prediction columns (some might be NaN)
+def _fit_stacked_ensemble(
+    val_df: pd.DataFrame, pred_cols: list[str]
+) -> tuple[dict[str, float], float]:
+    """Non-negative stacking (Ridge benzeri, pozitif katsayilar)."""
     available_cols = [col for col in pred_cols if val_df[col].notna().any()]
-    
-    if len(available_cols) == 0:
-        # Fallback to equal weights if no predictions available
-        return {col: 1.0 / len(pred_cols) for col in pred_cols}, 0.0
-    
-    if len(available_cols) == 1:
-        # If only one prediction source, use it with weight 1
-        weights = {col: 0.0 for col in pred_cols}
-        weights[available_cols[0]] = 1.0
-        bias = (val_df[TARGET_COLUMN] - val_df[available_cols[0]]).mean()
-        return weights, bias
-    
-    # Prepare data for optimization
-    X = val_df[available_cols].fillna(val_df[available_cols].mean()).to_numpy()
-    y = val_df[TARGET_COLUMN].to_numpy()
-    
-    # Objective function: minimize MAE
-    def objective(weights):
-        weights = np.array(weights)
-        ensemble_pred = np.dot(X, weights)
-        mae = mean_absolute_error(y, ensemble_pred)
-        return mae
-    
-    # Constraints: weights sum to 1, non-negative
-    constraints = {"type": "eq", "fun": lambda w: np.sum(w) - 1}
-    bounds = [(0, 1) for _ in range(len(available_cols))]
-    
-    # Initial guess: equal weights
-    initial_weights = np.ones(len(available_cols)) / len(available_cols)
-    
-    # Optimize
-    result = minimize(objective, initial_weights, bounds=bounds, constraints=constraints, method="SLSQP")
-    
-    optimal_weights = result.x
-    bias = (y - np.dot(X, optimal_weights)).mean()
-    
-    # Map back to all prediction columns
     weights_dict = {col: 0.0 for col in pred_cols}
-    for i, col in enumerate(available_cols):
-        weights_dict[col] = optimal_weights[i]
-    
+
+    if not available_cols:
+        return weights_dict, 0.0
+
+    if len(available_cols) == 1:
+        col = available_cols[0]
+        weights_dict[col] = 1.0
+        bias = float((val_df[TARGET_COLUMN] - val_df[col]).mean())
+        return weights_dict, bias
+
+    X = val_df[available_cols].fillna(val_df[available_cols].median()).to_numpy()
+    y = val_df[TARGET_COLUMN].to_numpy()
+
+    reg = LinearRegression(positive=True, fit_intercept=True)
+    reg.fit(X, y)
+
+    coef_sum = float(reg.coef_.sum())
+    if coef_sum > 1e-6:
+        normalized = reg.coef_ / coef_sum
+        for col, weight in zip(available_cols, normalized):
+            weights_dict[col] = float(weight)
+        bias = float(reg.intercept_)
+    else:
+        weights_dict[available_cols[0]] = 1.0
+        bias = float((y - X[:, 0]).mean())
+
     return weights_dict, bias
 
 
 def _apply_ensemble(df: pd.DataFrame, pred_cols: list[str], weights: dict[str, float], bias: float) -> np.ndarray:
-    """Apply ensemble weights to predictions."""
-    X = df[pred_cols].fillna(df[pred_cols].mean()).to_numpy()
-    weight_array = np.array([weights[col] for col in pred_cols])
-    ensemble_pred = np.dot(X, weight_array) - bias
-    return ensemble_pred
+    """Stacked ensemble: intercept + agirlikli toplam."""
+    X = df[pred_cols].fillna(df[pred_cols].median()).to_numpy()
+    weight_array = np.array([weights.get(col, 0.0) for col in pred_cols])
+    return np.dot(X, weight_array) + bias
+
+
+def _fit_catboost_seasonal_blend(val_df: pd.DataFrame) -> tuple[float, float]:
+    """CatBoost ile mevsimsel blend arasinda en iyi agirligi sec."""
+    y = val_df[TARGET_COLUMN].to_numpy()
+    catboost = val_df["pred_catboost"].fillna(val_df["pred_seasonal_blend"]).to_numpy()
+    seasonal = val_df["pred_seasonal_blend"].fillna(val_df["pred_catboost"]).to_numpy()
+
+    best_w = 1.0
+    best_mae = float("inf")
+    for w in np.linspace(0.0, 1.0, 21):
+        pred = w * catboost + (1.0 - w) * seasonal
+        mae = mean_absolute_error(y, pred)
+        if mae < best_mae:
+            best_mae = mae
+            best_w = float(w)
+
+    blend_pred = best_w * catboost + (1.0 - best_w) * seasonal
+    bias = float(np.mean(y - blend_pred))
+    return best_w, bias
+
+
+def _hybrid_prediction(df: pd.DataFrame, catboost_weight: float, bias: float) -> np.ndarray:
+    catboost = df["pred_catboost"].fillna(df["pred_seasonal_blend"]).to_numpy()
+    seasonal = df["pred_seasonal_blend"].fillna(df["pred_catboost"]).to_numpy()
+    return catboost_weight * catboost + (1.0 - catboost_weight) * seasonal + bias
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

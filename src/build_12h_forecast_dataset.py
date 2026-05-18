@@ -33,6 +33,11 @@ FEATURE_COLUMNS = [
 ]
 
 TARGET_COLUMN = "ptf_target"
+DELTA_TARGET_COLUMN = "ptf_target_delta"
+RESIDUAL_TARGET_COLUMN = "ptf_target_residual"
+SEASONAL_ANCHOR_COLUMN = "kesin_seasonal_anchor"
+INTERIM_ANCHOR_COLUMN = "interim_anchor"
+MIN_INTERIM_PRICE = 10.0
 
 
 @dataclass(frozen=True)
@@ -67,11 +72,42 @@ def build_12h_forecast_dataset() -> tuple[pd.DataFrame, Forecast12hDatasetSummar
             if pd.isna(target_ptf):
                 continue
 
+            interim_at_target = _value_at(by_datetime, target_datetime, "ptf")
+            interim_anchor = base_features.get("ptf_lag_1", np.nan)
+            if pd.isna(interim_at_target):
+                interim_at_target = interim_anchor
+            if pd.isna(interim_anchor) or float(interim_anchor) < MIN_INTERIM_PRICE:
+                continue
+
+            kesin_seasonal_anchor = _value_at(
+                by_datetime,
+                target_datetime - pd.Timedelta(hours=24),
+                "ptf_kesinlesmis",
+            )
+            if pd.isna(kesin_seasonal_anchor):
+                kesin_seasonal_anchor = base_features.get("ptf_kesinlesmis_lag_24", np.nan)
+            if pd.isna(kesin_seasonal_anchor):
+                continue
+
+            kesin_at_target_week = _value_at(
+                by_datetime,
+                target_datetime - pd.Timedelta(hours=168),
+                "ptf_kesinlesmis",
+            )
+
+            target_delta = float(target_ptf) - float(interim_at_target)
+            target_residual = float(target_ptf) - float(kesin_seasonal_anchor)
+
             row = {
                 "issue_datetime": issue_datetime,
                 "target_datetime": target_datetime,
                 "forecast_horizon": horizon,
                 TARGET_COLUMN: float(target_ptf),
+                DELTA_TARGET_COLUMN: target_delta,
+                RESIDUAL_TARGET_COLUMN: target_residual,
+                SEASONAL_ANCHOR_COLUMN: float(kesin_seasonal_anchor),
+                INTERIM_ANCHOR_COLUMN: float(interim_anchor),
+                "kesin_at_target_week_ago": kesin_at_target_week,
                 **base_features,
                 **_target_calendar_features(target_datetime),
                 "load_forecast_plan_target_hour": _load_forecast_at(

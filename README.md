@@ -88,11 +88,17 @@ code ~/ptf_tahmin_uygulamasi
 
 ## Calistirma
 
-Ortam testi:
+Tam pipeline (veri seti + delta CatBoost + ensemble + canli snapshot):
 
 ```zsh
 source venv/bin/activate
 python main.py
+```
+
+EPİAŞ'tan canli veri cekerek:
+
+```zsh
+python main.py --fetch
 ```
 
 Streamlit testi:
@@ -101,6 +107,22 @@ Streamlit testi:
 source venv/bin/activate
 streamlit run streamlit_app.py
 ```
+
+## Aktif mimari (12 saat PTF)
+
+```
+EPİAŞ (I-MCP + MCP) -> final_hourly_dataset.csv
+  -> forecast_12h_dataset.csv (hedef: kesinlesmis, delta: kesin - interim)
+  -> CatBoost (12 ufuk, delta hedef)
+  -> build_final_ensemble.py (mevsimsel baseline + CatBoost)
+  -> ptf_12h_live_bundle.csv + app_data/dashboard_data.json
+```
+
+Panel (`streamlit_app.py`) final ensemble metriklerini ve canli karsilastirmayi (I-MCP / naive / CatBoost / ensemble) gosterir.
+
+## Legacy moduller
+
+Asagidaki dosyalar **ana pipeline'a bagli degildir** (D+2, 24h, deneme LSTM vb.). Liste: `docs/legacy_modules.md`.
 
 ## Streamlit Cloud Deploy
 
