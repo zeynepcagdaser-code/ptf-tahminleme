@@ -155,9 +155,8 @@ def _load_forecast_at(
     target_datetime: pd.Timestamp,
     cutoff: pd.Timestamp,
 ) -> float:
-    value = _value_at(by_datetime, target_datetime, "load_forecast_plan")
-    if not pd.isna(value):
-        return float(value)
+    # Always use last known value at cutoff to avoid leakage
+    # The load forecast at target_datetime might not be known at issue time
     return _last_known(by_datetime, cutoff, "load_forecast_plan")
 
 
