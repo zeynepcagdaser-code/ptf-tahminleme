@@ -291,6 +291,46 @@ def _extract_panel_12h_forecast(df: pd.DataFrame) -> pd.DataFrame:
     return out[keep]
 
 
+def _normalize_ensemble_weight_keys(weights: dict) -> dict:
+    """
+    Ensemble agirliklari dosyalarda bazen `pred_kesin_*`, bazen `pred_*` ile gelebiliyor.
+    Panel icinde tek bir isim seti kullanmak icin normalize ederiz.
+    """
+    if not isinstance(weights, dict):
+        return {}
+    alias_map = {
+        "pred_kesin_same_hour_yesterday": "pred_same_hour_yesterday",
+        "pred_kesin_same_hour_last_week": "pred_same_hour_last_week",
+        "pred_kesin_last_24h_mean": "pred_last_24h_mean",
+        "pred_kesin_rolling_24h": "pred_rolling_24h",
+        "pred_kesin_rolling_168h": "pred_rolling_168h",
+    }
+    out: dict = {}
+    for k, v in weights.items():
+        out[alias_map.get(k, k)] = v
+    # Eger hem eski hem yeni anahtar ayni anda varsa, yeni anahtar kazansin.
+    for old, new in alias_map.items():
+        if new in weights:
+            out[new] = weights[new]
+    return out
+
+
+def _ensure_predicted_ptf_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Canli tahmin tarafinda tek bir sutun adi kullanmak icin:
+    - `predicted_ptf` yoksa `ensemble_ptf` veya `panel_ptf`'ten turet.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "predicted_ptf" not in out.columns:
+        if "ensemble_ptf" in out.columns:
+            out["predicted_ptf"] = out["ensemble_ptf"]
+        elif "panel_ptf" in out.columns:
+            out["predicted_ptf"] = out["panel_ptf"]
+    return out
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_live_bundle() -> pd.DataFrame:
     live_path = PANEL_SOURCES.live_forecast_path
@@ -306,7 +346,7 @@ def load_live_bundle() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_final_predictions_prepared() -> pd.DataFrame:
+def load_final_predictions_prepared() -> tuple[pd.DataFrame, dict]:
     """
     Final ensemble tahmin dosyasini dashboard icin standardize eder.
     - actual_ptf: gercek hedef PTF (csv'de ptf_target)
@@ -314,7 +354,7 @@ def load_final_predictions_prepared() -> pd.DataFrame:
     """
     df = load_final_predictions()
     if df.empty:
-        return df
+        return df, {}
 
     out = df.copy()
     for c in ("issue_datetime", "target_datetime"):
@@ -340,11 +380,18 @@ def load_final_predictions_prepared() -> pd.DataFrame:
 
     needed = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
     if not needed.issubset(set(out.columns)):
-        return df
+        missing = sorted(list(needed - set(out.columns)))
+        # cache_data icinde UI mesajlari basmiyoruz; hatayi caller tarafinda gosterecegiz.
+        err = {
+            "error": "Beklenen kolonlar eksik",
+            "missing_columns": missing,
+            "available_columns": sorted(list(out.columns)),
+        }
+        return pd.DataFrame(), err
 
     out = out.dropna(subset=["target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"]).copy()
     out["absolute_error"] = (out["predicted_ptf"] - out["actual_ptf"]).abs()
-    return out
+    return out, {}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -413,7 +460,7 @@ else:
 final_metrics = data
 leaderboard = load_leaderboard()
 legacy_metrics = load_legacy_metrics()
-final_preds = load_final_predictions_prepared()
+final_preds, final_preds_err = load_final_predictions_prepared()
 final_horizon = load_final_horizon_metrics()
 baseline_horizon = load_baseline_horizon_metrics()
 final_dataset = load_final_dataset()
@@ -464,6 +511,8 @@ if view_mode == "Genel Bakış":
     
     if final_metrics:
         # Metrics comparison
+        # Adil karsilastirma icin: Final ensemble ve baseline (CatBoost) ayni hedef tanimi,
+        # ayni train/test araligi ve ayni kronolojik kesim uzerinden raporlanir (pipeline tarafinda uretilir).
         baseline_mae = final_metrics.get("baseline_comparison", {}).get("mae", 0)
         baseline_rmse = final_metrics.get("baseline_comparison", {}).get("rmse", 0)
         baseline_smape = final_metrics.get("baseline_comparison", {}).get("smape", 0)
@@ -474,9 +523,10 @@ if view_mode == "Genel Bakış":
         final_smape = final_metrics.get("SMAPE", 0)
         final_r2 = final_metrics.get("R2", 0)
         
-        mae_imp = (baseline_mae - final_mae) / baseline_mae * 100 if baseline_mae > 0 else 0
-        rmse_imp = (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse > 0 else 0
-        smape_imp = (baseline_smape - final_smape) / baseline_smape * 100 if baseline_smape > 0 else 0
+        # Not: Baseline metrik 0 ise yuzdesel iyilesme hesaplamak anlamsiz (bolme-sifir).
+        mae_imp = (baseline_mae - final_mae) / baseline_mae * 100 if baseline_mae > 0 else None
+        rmse_imp = (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse > 0 else None
+        smape_imp = (baseline_smape - final_smape) / baseline_smape * 100 if baseline_smape > 0 else None
         r2_imp = final_r2 - baseline_r2
         
         # Comparison cards
@@ -486,8 +536,8 @@ if view_mode == "Genel Bakış":
             st.metric(
                 "MAE",
                 f"{final_mae:.2f} TL",
-                f"{mae_imp:+.1f}%",
-                delta_color="normal" if mae_imp > 0 else "inverse"
+                f"{mae_imp:+.1f}%" if mae_imp is not None else "—",
+                delta_color="normal" if (mae_imp is not None and mae_imp > 0) else "inverse"
             )
             st.caption(f"Baseline: {baseline_mae:.2f} TL")
         
@@ -495,8 +545,8 @@ if view_mode == "Genel Bakış":
             st.metric(
                 "RMSE",
                 f"{final_rmse:.2f} TL",
-                f"{rmse_imp:+.1f}%",
-                delta_color="normal" if rmse_imp > 0 else "inverse"
+                f"{rmse_imp:+.1f}%" if rmse_imp is not None else "—",
+                delta_color="normal" if (rmse_imp is not None and rmse_imp > 0) else "inverse"
             )
             st.caption(f"Baseline: {baseline_rmse:.2f} TL")
         
@@ -504,10 +554,13 @@ if view_mode == "Genel Bakış":
             st.metric(
                 "SMAPE",
                 f"{final_smape:.2f}%",
-                f"{smape_imp:+.1f}%",
-                delta_color="normal" if smape_imp > 0 else "inverse"
+                f"{smape_imp:+.1f}%" if smape_imp is not None else "—",
+                delta_color="normal" if (smape_imp is not None and smape_imp > 0) else "inverse"
             )
             st.caption(f"Baseline: {baseline_smape:.2f}%")
+
+        if (mae_imp is None) or (rmse_imp is None) or (smape_imp is None):
+            st.info("Not: Baseline metrik 0 oldugu icin bazi iyilesme yuzdeleri hesaplanamadi.")
         
         with col4:
             st.metric(
@@ -570,9 +623,18 @@ if view_mode == "Genel Bakış":
                 st.dataframe(pd.DataFrame(comp_rows), width="stretch", hide_index=True)
 
         if final_preds.empty:
-            st.warning(
-                f"Tahmin dosyası bulunamadı: `{PANEL_SOURCES.predictions_path.relative_to(ROOT)}`"
-            )
+            if final_preds_err:
+                missing_cols = final_preds_err.get("missing_columns", [])
+                st.error(
+                    "Final tahmin dosyasinda beklenen kolonlar eksik: "
+                    + ", ".join(missing_cols)
+                )
+                with st.expander("Detay (mevcut kolonlar)", expanded=False):
+                    st.code(", ".join(final_preds_err.get("available_columns", [])))
+            else:
+                st.warning(
+                    f"Tahmin dosyası bulunamadı: `{PANEL_SOURCES.predictions_path.relative_to(ROOT)}`"
+                )
         else:
             preds = final_preds.copy()
             required = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
@@ -922,7 +984,7 @@ elif view_mode == "Ensemble Detayları":
         
         weight_data = []
         for horizon in range(1, 13):
-            w = weights.get(horizon, {})
+            w = _normalize_ensemble_weight_keys(weights.get(horizon, {}))
             weight_data.append({
                 "Horizon": f"{horizon}h",
                 "CatBoost": w.get("pred_catboost", 0) * 100,
@@ -979,13 +1041,14 @@ elif view_mode == "Ensemble Detayları":
         bias = em.get("bias_corrections", {})
         weight_data = []
         for horizon in range(1, 13):
-            w = weights.get(str(horizon), weights.get(horizon, {}))
+            w_raw = weights.get(str(horizon), weights.get(horizon, {}))
+            w = _normalize_ensemble_weight_keys(w_raw)
             weight_data.append({
                 "Horizon": f"{horizon}h",
                 "CatBoost": w.get("pred_catboost", 0) * 100,
-                "Dün Aynı Saat": w.get("pred_kesin_same_hour_yesterday", 0) * 100,
-                "Geçen Hafta": w.get("pred_kesin_same_hour_last_week", 0) * 100,
-                "Rolling 24s": w.get("pred_kesin_rolling_24h", 0) * 100,
+                "Dün Aynı Saat": w.get("pred_same_hour_yesterday", 0) * 100,
+                "Geçen Hafta": w.get("pred_same_hour_last_week", 0) * 100,
+                "Rolling 24s": w.get("pred_rolling_24h", 0) * 100,
             })
         st.dataframe(pd.DataFrame(weight_data).set_index("Horizon").style.format("{:.1f}%"), width="stretch")
     else:
@@ -1055,16 +1118,20 @@ elif view_mode == "DL Modeller (5Y)":
 # --- Live Forecast Section ---
 elif view_mode == "Canlı Tahmin":
     st.markdown("## 🔮 Canlı 12 Saat Tahmini")
+    # Bu sayfa tahmin aninda bilinen bilgilere dayanir:
+    # - I-MCP (kesim saati) ve naive baseline (son 24s ort vb.),
+    # - CatBoost ve/veya ensemble/dl ciktilari (ayni horizon tanimi ile).
     st.caption("Kesim anındaki I-MCP, naive baseline, CatBoost ve final ensemble birlikte gösterilir.")
 
     # If user selects DL model, generate a lightweight live forecast using the last available 5Y window.
+    # Canli tahminde tek bir ana sutun adi kullanmak icin hedefimiz: `predicted_ptf`.
     if st.session_state.get("forecast_model_choice") in ("CNN-LSTM (5Y)", "LSTM (5Y)"):
         try:
             from src.dl_5y_inference import predict_next_12h_from_5y
 
             mt = "cnn_lstm" if st.session_state.get("forecast_model_choice") == "CNN-LSTM (5Y)" else "lstm"
             dl = predict_next_12h_from_5y(model_type=mt)
-            live_bundle = dl.output.rename(columns={"predicted_ptf": "ensemble_ptf"})
+            live_bundle = dl.output.copy()
             st.info(f"DL aktif: {dl.model_type} | issue: {dl.issue_datetime}")
         except Exception as exc:  # noqa: BLE001
             st.error(f"DL live forecast üretilemedi: {exc}")
@@ -1072,10 +1139,9 @@ elif view_mode == "Canlı Tahmin":
     else:
         live_bundle = load_live_bundle()
     if live_bundle.empty and not live_df.empty:
-        rename_map = {}
-        if "predicted_ptf" in live_df.columns and "ensemble_ptf" not in live_df.columns:
-            rename_map["predicted_ptf"] = "ensemble_ptf"
-        live_bundle = live_df.rename(columns=rename_map)
+        live_bundle = live_df.copy()
+
+    live_bundle = _ensure_predicted_ptf_column(live_bundle)
 
     if live_bundle.empty or len(live_bundle) < 12:
         if not final_dataset.empty:
@@ -1089,7 +1155,6 @@ elif view_mode == "Canlı Tahmin":
                 live_bundle["issue_datetime"] = cutoff_dt
                 live_bundle["interim_ptf"] = interim
                 live_bundle["naive_ptf"] = live_bundle["predicted_ptf"]
-                live_bundle["ensemble_ptf"] = live_bundle["predicted_ptf"]
                 live_bundle["catboost_ptf"] = np.nan
 
     if not live_bundle.empty:
@@ -1137,9 +1202,11 @@ elif view_mode == "Canlı Tahmin":
                     line=dict(color="#a855f7", width=2, dash="dash"),
                 )
             )
-        panel_col = "panel_ptf" if "panel_ptf" in live_bundle.columns else "ensemble_ptf"
+        # Panel/model ciktilari icin tek sutun: predicted_ptf
+        panel_col = "predicted_ptf"
         if panel_col not in live_bundle.columns:
-            panel_col = "predicted_ptf" if "predicted_ptf" in live_bundle.columns else "ensemble_ptf"
+            st.error("Canli tahmin verisinde `predicted_ptf` kolonu yok. (Beklenen tek isimlendirme)")
+            st.stop()
         primary_note = ""
         if "primary_model" in live_bundle.columns:
             primary_note = f" [{live_bundle['primary_model'].iloc[0]}]"
@@ -1170,7 +1237,7 @@ elif view_mode == "Canlı Tahmin":
             "interim_ptf": "I-MCP (kesim)",
             "seasonal_ptf": "Mevsimsel",
             "catboost_ptf": "CatBoost",
-            panel_col: "Panel tahmin",
+            "predicted_ptf": "Panel tahmin",
         }
         show_cols = [c for c in table_cols if c in live_bundle.columns]
         table = live_bundle[show_cols].rename(columns=table_cols)
@@ -1191,8 +1258,14 @@ elif view_mode == "Performans Analizi":
             on="forecast_horizon", 
             suffixes=("_baseline", "_final")
         )
-        comparison["mae_improvement"] = (comparison["MAE_baseline"] - comparison["MAE_final"]) / comparison["MAE_baseline"] * 100
+        # Baseline MAE 0 ise yuzdesel iyilesme tanimsizdir.
+        denom = pd.to_numeric(comparison["MAE_baseline"], errors="coerce")
+        num = pd.to_numeric(comparison["MAE_baseline"] - comparison["MAE_final"], errors="coerce")
+        comparison["mae_improvement"] = np.where(denom > 0, (num / denom) * 100, np.nan)
         comparison["r2_improvement"] = comparison["R2_final"] - comparison["R2_baseline"]
+
+        if (denom <= 0).any():
+            st.info("Not: Baseline MAE=0 olan horizon(lar) icin iyilesme yuzdesi hesaplanamadi.")
         
         # MAE comparison chart
         fig = go.Figure()
@@ -1279,16 +1352,23 @@ elif view_mode == "Performans Analizi":
         
         # Key findings
         st.markdown("### 🔍 Performans Bulguları")
-        best_horizon = comparison.loc[comparison["mae_improvement"].idxmax()]
-        worst_horizon = comparison.loc[comparison["mae_improvement"].idxmin()]
+        valid_imp = comparison.dropna(subset=["mae_improvement"]).copy()
+        if valid_imp.empty:
+            st.warning("IYILESTIRME yuzdesi hesaplanabilecek horizon yok (baseline MAE=0 olabilir).")
+            best_horizon = None
+            worst_horizon = None
+        else:
+            best_horizon = valid_imp.loc[valid_imp["mae_improvement"].idxmax()]
+            worst_horizon = valid_imp.loc[valid_imp["mae_improvement"].idxmin()]
         
         col1, col2 = st.columns(2)
-        with col1:
-            st.success(f"**En İyi Horizon:** {best_horizon['forecast_horizon']}h")
-            st.caption(f"MAE İyileştirme: {best_horizon['mae_improvement']:.1f}%")
-        with col2:
-            st.info(f"En Kötü Horizon: {worst_horizon['forecast_horizon']}h")
-            st.caption(f"MAE İyileştirme: {worst_horizon['mae_improvement']:.1f}%")
+        if best_horizon is not None and worst_horizon is not None:
+            with col1:
+                st.success(f"**En İyi Horizon:** {best_horizon['forecast_horizon']}h")
+                st.caption(f"MAE İyileştirme: {best_horizon['mae_improvement']:.1f}%")
+            with col2:
+                st.info(f"En Kötü Horizon: {worst_horizon['forecast_horizon']}h")
+                st.caption(f"MAE İyileştirme: {worst_horizon['mae_improvement']:.1f}%")
         
     else:
         st.warning("⚠️ Horizon metrikleri bulunamadı.")
