@@ -28,6 +28,8 @@ EXCLUDE_FEATURE_COLUMNS = {
     "hour",
     "ptf_kesinlesmis",
     "ptf_interim",
+    "ges_forecast",
+    "yek_portfolio_income",
 }
 
 
@@ -40,11 +42,7 @@ def build_dl_sequence_dataset_5y() -> dict[str, Any]:
     df = df.sort_values("datetime").reset_index(drop=True)
 
     feature_cols = _select_feature_columns(df)
-    for col in feature_cols:
-        if col == PRICE_COLUMN_5Y:
-            continue
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-    df[PRICE_COLUMN_5Y] = pd.to_numeric(df[PRICE_COLUMN_5Y], errors="coerce")
+    df = _impute_for_sequences(df, feature_cols)
 
     X_raw, y_raw, cutoffs = _build_sequences(df, feature_cols)
     if len(X_raw) < 500:
@@ -124,6 +122,23 @@ def build_dl_sequence_dataset_5y() -> dict[str, Any]:
         "feature_names": feature_cols,
     }
     return summary
+
+
+def _impute_for_sequences(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    out = df.sort_values("datetime").reset_index(drop=True).copy()
+    out[PRICE_COLUMN_5Y] = pd.to_numeric(out[PRICE_COLUMN_5Y], errors="coerce")
+    out[PRICE_COLUMN_5Y] = out[PRICE_COLUMN_5Y].interpolate(method="linear", limit=6).ffill(limit=24).bfill(limit=24)
+
+    for col in feature_cols:
+        if col == PRICE_COLUMN_5Y:
+            continue
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+        out[col] = out[col].interpolate(method="linear", limit=12, limit_direction="both")
+        out[col] = out[col].ffill(limit=48).bfill(limit=48)
+        med = out[col].median()
+        out[col] = out[col].fillna(med if pd.notna(med) else 0.0)
+
+    return out
 
 
 def _select_feature_columns(df: pd.DataFrame) -> list[str]:

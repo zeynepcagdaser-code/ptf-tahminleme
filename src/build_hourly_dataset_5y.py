@@ -86,14 +86,31 @@ CRITICAL_COLUMNS = [
 ]
 
 INTERPOLATE_LIMITS = {
-    PRICE_COLUMN_5Y: 3,
-    "ptf_interim": 3,
-    "smf": 6,
-    "load_forecast_plan": 6,
-    "real_time_consumption": 6,
-    "wind_generation": 6,
-    "solar_generation": 6,
-    "total_generation": 6,
+    PRICE_COLUMN_5Y: 6,
+    "ptf_interim": 6,
+    "ptf_kesinlesmis": 6,
+    "smf": 12,
+    "load_forecast_plan": 12,
+    "real_time_consumption": 12,
+    "wind_generation": 12,
+    "solar_generation": 12,
+    "total_generation": 12,
+    "net_load": 12,
+    "renewable_total": 12,
+    "idm_trade_value": 24,
+    "idm_weighted_average_price": 24,
+    "dam_trade_volume": 24,
+    "dam_supply_demand": 24,
+}
+
+FFILL_COLS = {
+    "grf_tl",
+    "usd_try",
+    "imbalance_quantity",
+    "imbalance_amount",
+    "yek_generation_cost",
+    "yek_portfolio_income",
+    "system_direction",
 }
 
 
@@ -150,9 +167,12 @@ def _build_merged_panel() -> tuple[pd.DataFrame, dict[str, bool]]:
     dataset = _merge_hourly(dataset, _resolve_raw_file("load_forecast_plan.csv"), "load_forecast_plan", ["lep"])
     dataset = _merge_hourly(dataset, _resolve_raw_file("real_time_consumption.csv"), "real_time_consumption", ["consumption"])
     dataset = _merge_generation_sources(dataset, _resolve_raw_file("realtime_generation.csv"))
-    dataset = _merge_hourly(dataset, _resolve_raw_file("smf.csv"), "smf", ["systemMarginalPrice"])
+    dataset = _merge_hourly(dataset, _resolve_raw_file("smf.csv"), "smf", ["systemMarginalPrice", "smf"])
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("system_direction.csv"), "system_direction", ["systemDirection", "direction"]
+        dataset,
+        _resolve_raw_file("system_direction.csv"),
+        "system_direction",
+        ["smpDirectionId", "systemDirection", "direction"],
     )
     dataset = _merge_hourly(
         dataset, _resolve_raw_file("res_generation_forecast.csv"), "res_forecast", ["forecast", "generation", "total"]
@@ -193,16 +213,28 @@ def _build_merged_panel() -> tuple[pd.DataFrame, dict[str, bool]]:
         dataset, _resolve_raw_file("dam_supply_demand.csv"), "dam_supply_demand", ["supply", "demand", "total"]
     )
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("dam_trade_volume.csv"), "dam_trade_volume", ["tradeVolume", "volume"]
+        dataset,
+        _resolve_raw_file("dam_trade_volume.csv"),
+        "dam_trade_volume",
+        ["volumeOfAsk", "tradeVolume", "volume"],
     )
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("dam_clearing_quantity.csv"), "dam_clearing_quantity", ["clearingQuantity", "quantity"]
+        dataset,
+        _resolve_raw_file("dam_clearing_quantity.csv"),
+        "dam_clearing_quantity",
+        ["clearingQuantity", "quantity", "matchedQuantity"],
     )
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("bpm_order_summary_up.csv"), "bpm_order_summary_up", ["upAmount", "amount"]
+        dataset,
+        _resolve_raw_file("bpm_order_summary_up.csv"),
+        "bpm_order_summary_up",
+        ["net", "upRegulationDelivered", "upAmount", "amount"],
     )
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("bpm_order_summary_down.csv"), "bpm_order_summary_down", ["downAmount", "amount"]
+        dataset,
+        _resolve_raw_file("bpm_order_summary_down.csv"),
+        "bpm_order_summary_down",
+        ["net", "downRegulationDelivered", "downAmount", "amount"],
     )
     dataset = _merge_hourly(
         dataset,
@@ -211,13 +243,22 @@ def _build_merged_panel() -> tuple[pd.DataFrame, dict[str, bool]]:
         ["weightedAveragePrice", "price"],
     )
     dataset = _merge_hourly(
-        dataset, _resolve_raw_file("idm_trade_value.csv"), "idm_trade_value", ["tradeValue", "value"]
+        dataset,
+        _resolve_raw_file("idm_trade_value.csv"),
+        "idm_trade_value",
+        ["tradingVolume", "tradeValue", "volume", "total"],
     )
     dataset = _merge_monthly(
-        dataset, _resolve_raw_file("imbalance_quantity.csv"), "imbalance_quantity", ["imbalanceQuantity", "quantity"]
+        dataset,
+        _resolve_raw_file("imbalance_quantity.csv"),
+        "imbalance_quantity",
+        ["positiveImbalance", "negativeImbalance", "imbalanceQuantity", "quantity"],
     )
     dataset = _merge_monthly(
-        dataset, _resolve_raw_file("imbalance_amount.csv"), "imbalance_amount", ["imbalanceAmount", "amount"]
+        dataset,
+        _resolve_raw_file("imbalance_amount.csv"),
+        "imbalance_amount",
+        ["imbalanceAmount", "amount", "positiveImbalance", "negativeImbalance"],
     )
     dataset = _merge_monthly(
         dataset, _resolve_raw_file("yek_generation_cost.csv"), "yek_generation_cost", ["cost", "amount"]
@@ -239,15 +280,19 @@ def _merge_monthly(
         dataset[target_column] = np.nan
         return dataset
     data = _read_csv(path)
-    date_column = _choose_date_column(data)
-    if date_column is None:
-        dataset[target_column] = np.nan
-        return dataset
+    if "datetime" in data.columns:
+        data = _with_datetime(data)
+        data["year_month"] = pd.to_datetime(data["datetime"], errors="coerce").dt.to_period("M").astype(str)
+    else:
+        date_column = _choose_date_column(data)
+        if date_column is None:
+            dataset[target_column] = np.nan
+            return dataset
+        data["year_month"] = pd.to_datetime(data[date_column], errors="coerce").dt.to_period("M").astype(str)
     value_column = _choose_value_column(data, preferred_columns)
     if value_column is None:
         dataset[target_column] = np.nan
         return dataset
-    data["year_month"] = pd.to_datetime(data[date_column], errors="coerce").dt.to_period("M").astype(str)
     data[target_column] = pd.to_numeric(data[value_column], errors="coerce")
     reduced = data[["year_month", target_column]].dropna(subset=["year_month"]).groupby("year_month", as_index=False).mean(
         numeric_only=True
@@ -339,31 +384,17 @@ def _finalize_hourly_index(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, An
 
     # Ham veri kısa ise (ör. yalnızca 2025 fallback) indeksi gözlemlenen aralığa daralt
     observed = out["datetime"].dropna()
-    if len(observed):
+    if len(observed) and len(out) < int(HOURS_5Y * 0.5):
         obs_start, obs_end = observed.min(), observed.max()
-        coverage = len(out) / max(len(full_index), 1)
-        if coverage < 0.35:
-            full_index = pd.date_range(obs_start, obs_end, freq="h")
-            start, end = obs_start, obs_end
+        full_index = pd.date_range(obs_start, obs_end, freq="h")
+        start, end = obs_start, obs_end
 
     missing_before = int(len(full_index) - out["datetime"].isin(full_index).sum())
     out = out.set_index("datetime").reindex(full_index).rename_axis("datetime").reset_index()
 
     nan_rates_before = {c: float(out[c].isna().mean()) for c in out.columns if c != "datetime"}
 
-    out = out.set_index("datetime")
-    for col, limit in INTERPOLATE_LIMITS.items():
-        if col not in out.columns:
-            continue
-        out[col] = out[col].interpolate(method="time", limit=limit)
-
-    for col in out.columns:
-        if col in INTERPOLATE_LIMITS:
-            continue
-        if out[col].dtype.kind in "biufc" and out[col].isna().mean() < 0.35:
-            out[col] = out[col].interpolate(method="time", limit=12)
-
-    out = out.reset_index()
+    out = _fill_panel_gaps(out.set_index("datetime")).reset_index()
 
     spike_cols = {"spike_flag", "is_weekend", "is_holiday", "is_ramadan_bayram", "is_kurban_bayram", "month_start", "month_end"}
     for col in spike_cols:
@@ -371,10 +402,13 @@ def _finalize_hourly_index(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, An
             out[col] = out[col].fillna(0)
 
     rows_before = len(out)
+    if out[PRICE_COLUMN_5Y].isna().any():
+        out[PRICE_COLUMN_5Y] = out[PRICE_COLUMN_5Y].fillna(out.get("ptf_kesinlesmis")).fillna(out.get("ptf_interim"))
     out = out.dropna(subset=[PRICE_COLUMN_5Y])
     dropped_target = rows_before - len(out)
 
     nan_rates_after = {c: float(out[c].isna().mean()) for c in out.columns if c != "datetime"}
+    alignment = _alignment_report(out)
 
     quality = {
         "start_date": str(start.date()),
@@ -388,8 +422,58 @@ def _finalize_hourly_index(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, An
         "critical_column_nan_after": {c: nan_rates_after.get(c, 1.0) for c in CRITICAL_COLUMNS},
         "duplicate_datetime_removed": int(df.duplicated(subset=["datetime"]).sum()),
         "leakage_note": "Sequence features use past-only lags/rollings at cutoff; y is future 12h price.",
+        "alignment": alignment,
     }
     return out, quality
+
+
+def _fill_panel_gaps(out: pd.DataFrame) -> pd.DataFrame:
+    for col, limit in INTERPOLATE_LIMITS.items():
+        if col not in out.columns:
+            continue
+        out[col] = out[col].interpolate(method="time", limit=limit, limit_direction="both")
+
+    for col in FFILL_COLS:
+        if col in out.columns:
+            out[col] = out[col].ffill(limit=48).bfill(limit=48)
+
+    for col in out.columns:
+        if col in INTERPOLATE_LIMITS or col in FFILL_COLS:
+            continue
+        if out[col].dtype.kind not in "biufc":
+            continue
+        if out[col].isna().mean() >= 0.85:
+            continue
+        out[col] = out[col].interpolate(method="time", limit=24, limit_direction="both")
+        if out[col].isna().mean() > 0.05:
+            med = out[col].median()
+            out[col] = out[col].fillna(med if pd.notna(med) else 0.0)
+
+    for col in out.columns:
+        if out[col].dtype.kind in "biufc" and out[col].isna().any():
+            med = out[col].median()
+            out[col] = out[col].fillna(med if pd.notna(med) else 0.0)
+
+    return out
+
+
+def _alignment_report(df: pd.DataFrame) -> dict[str, Any]:
+    dt = pd.to_datetime(df["datetime"], errors="coerce")
+    report: dict[str, Any] = {
+        "rows": int(len(df)),
+        "expected_rows": int(HOURS_5Y),
+        "datetime_start": str(dt.min()),
+        "datetime_end": str(dt.max()),
+        "duplicate_datetime": int(df.duplicated(subset=["datetime"]).sum()),
+        "columns_high_nan": {},
+    }
+    for col in df.columns:
+        if col == "datetime":
+            continue
+        rate = float(df[col].isna().mean()) if col in df.columns else 1.0
+        if rate > 0.15:
+            report["columns_high_nan"][col] = round(rate, 4)
+    return report
 
 
 def _write_feature_summary(df: pd.DataFrame) -> None:
