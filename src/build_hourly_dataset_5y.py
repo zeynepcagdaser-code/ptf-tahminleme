@@ -19,6 +19,8 @@ from src.build_final_hourly_dataset import (
 )
 from src.config import PROJECT_ROOT
 from src.dl_5y_config import (
+    HOURS_5Y,
+    hour_index_5y,
     FEATURE_SUMMARY_PATH,
     HOURLY_5Y_PATH,
     PRICE_COLUMN_5Y,
@@ -330,9 +332,10 @@ def _engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _finalize_hourly_index(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     out = df.drop_duplicates(subset=["datetime"]).sort_values("datetime").copy()
-    start = pd.Timestamp(START_DATE_5Y)
-    end = pd.Timestamp(end_date_5y()) + pd.Timedelta(hours=23)
-    full_index = pd.date_range(start, end, freq="h")
+    full_index = hour_index_5y()
+    if out["datetime"].dt.tz is None and full_index.tz is not None:
+        full_index = full_index.tz_localize(None)
+    start, end = full_index.min(), full_index.max()
 
     # Ham veri kısa ise (ör. yalnızca 2025 fallback) indeksi gözlemlenen aralığa daralt
     observed = out["datetime"].dropna()

@@ -9,7 +9,8 @@ from typing import Any
 import pandas as pd
 
 from src.config import PROJECT_ROOT
-from src.dl_5y_config import RAW_5Y_DIR, START_DATE_5Y, end_date_5y
+from src.dl_5y_config import HOURS_5Y, RAW_5Y_DIR, START_DATE_5Y, end_date_5y
+from src.epias_5y_normalize import normalize_raw_csv
 from src.epias_5y_panel import sync_fetch_live_to_app_data, write_fetch_progress
 from src.fetch_final_selected_features import (
     FinalFeatureSpec,
@@ -240,6 +241,12 @@ def _earliest_date_in_csv(path: Path) -> pd.Timestamp | None:
 def _has_full_history(path: Path) -> bool:
     if not _csv_is_valid(path):
         return False
+    try:
+        rows = len(pd.read_csv(path))
+        if rows >= int(HOURS_5Y * 0.98):
+            return True
+    except Exception:
+        pass
     earliest = _earliest_date_in_csv(path)
     if earliest is None or pd.isna(earliest):
         return False
@@ -354,7 +361,7 @@ class Epias5yFetcher(FinalSelectedFeatureFetcher):
                 new_df = pd.read_csv(output_path)
                 merged = _dedupe_epias_frame(pd.concat([prior_df, new_df], ignore_index=True))
                 merged.to_csv(output_path, index=False)
-                return FetchResult(
+                result = FetchResult(
                     spec.feature_name,
                     True,
                     len(merged),
@@ -364,6 +371,16 @@ class Epias5yFetcher(FinalSelectedFeatureFetcher):
                 )
             except Exception:
                 pass
+        if result.success and output_path.exists() and spec.frequency == "hourly":
+            rows = normalize_raw_csv(output_path, spec.feature_name, frequency=spec.frequency)
+            result = FetchResult(
+                spec.feature_name,
+                True,
+                rows,
+                result.source,
+                str(output_path),
+                result.error,
+            )
         return result
 
     def fetch_usd_try(self) -> FetchResult:

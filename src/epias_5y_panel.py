@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import PROJECT_ROOT
-from src.dl_5y_config import HOURLY_5Y_PATH, START_DATE_5Y, end_date_5y
+from src.dl_5y_config import HOURS_5Y, HOURLY_5Y_PATH, START_DATE_5Y, end_date_5y
 
 
 RAW_5Y_DIR = PROJECT_ROOT / "data" / "raw" / "epias_5y"
@@ -73,8 +73,7 @@ def _file_date_range(path: Path) -> tuple[pd.Timestamp | None, pd.Timestamp | No
 
 def build_epias_5y_inventory() -> pd.DataFrame:
     target_start = pd.Timestamp(START_DATE_5Y)
-    target_end = pd.Timestamp(end_date_5y()) + pd.Timedelta(hours=23)
-    expected_hours = int((target_end - target_start).total_seconds() // 3600) + 1
+    expected_hours = HOURS_5Y
 
     status_df = pd.DataFrame()
     if FETCH_STATUS_PATH.exists():

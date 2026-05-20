@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+
+import pandas as pd
 
 from src.config import PROJECT_ROOT, TIMEZONE, get_settings
 
 
 START_DATE_5Y = date(2020, 1, 1)
+HOURS_5Y = 5 * 365 * 24  # 43_800 saatlik satır
 
 
 def end_date_5y() -> date:
-    return get_settings().end_date
+    """Tam 5 takvim yılı (bugün değil) — saatlik seriler ~43.800 satır."""
+    return START_DATE_5Y + timedelta(days=5 * 365 - 1)
+
+
+def hour_index_5y() -> pd.DatetimeIndex:
+    start = pd.Timestamp(START_DATE_5Y, tz=TIMEZONE)
+    return pd.date_range(start=start, periods=HOURS_5Y, freq="h")
 
 
 RAW_5Y_DIR = PROJECT_ROOT / "data" / "raw" / "epias_5y"
