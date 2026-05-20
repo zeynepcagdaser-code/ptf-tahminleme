@@ -29,6 +29,7 @@ class FinalFeatureSpec:
     fallback_file: str | None = None
     sort_field: str = "date"
     chunk_granularity: str = "monthly"
+    date_mode: str = "range"  # range | single (SupplyDemandRequestDto: date)
 
 
 @dataclass
@@ -201,11 +202,10 @@ class FinalSelectedFeatureFetcher:
 
         print(f"[FETCH] {spec.feature_name}")
 
-        date_ranges = (
-            iter_daily_ranges(self.start_date, self.end_date)
-            if spec.chunk_granularity == "daily"
-            else iter_monthly_ranges(self.start_date, self.end_date)
-        )
+        if spec.date_mode == "single" or spec.chunk_granularity == "daily":
+            date_ranges = iter_daily_ranges(self.start_date, self.end_date)
+        else:
+            date_ranges = iter_monthly_ranges(self.start_date, self.end_date)
         for chunk_start, chunk_end in date_ranges:
             try:
                 items = self._request_epias_chunk_with_backoff_window(spec, chunk_start, chunk_end)
@@ -273,15 +273,22 @@ class FinalSelectedFeatureFetcher:
     ) -> list[dict[str, Any]]:
         base_url = self._base_url(spec.service)
         url = f"{base_url}{spec.endpoint_path}"
-        payload = {
-            "startDate": _epias_datetime(chunk_start, end_of_day=False),
-            "endDate": _epias_datetime(chunk_end, end_of_day=True),
-            "page": {
-                "number": 1,
-                "size": self.page_size,
-                "sort": {"field": spec.sort_field, "direction": "ASC"},
-            },
+        page = {
+            "number": 1,
+            "size": self.page_size,
+            "sort": {"field": spec.sort_field, "direction": "ASC"},
         }
+        if spec.date_mode == "single":
+            payload = {
+                "date": _epias_datetime(chunk_start, end_of_day=False),
+                "page": page,
+            }
+        else:
+            payload = {
+                "startDate": _epias_datetime(chunk_start, end_of_day=False),
+                "endDate": _epias_datetime(chunk_end, end_of_day=True),
+                "page": page,
+            }
 
         response = self._post_with_retry(url, payload)
         if not response.ok:

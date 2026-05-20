@@ -28,7 +28,21 @@ def main() -> None:
         help="(eski) Dosya bazli cozumleme artik varsayilan; bu bayrak istege bagli log icin",
     )
     parser.add_argument("--quick-train", action="store_true", default=True)
+    parser.add_argument(
+        "--only-features",
+        type=str,
+        default="",
+        help="Virgülle ayrılmış seri adları (örn. dam_supply_demand,idm_trade_value)",
+    )
     args = parser.parse_args()
+
+    if args.only_features.strip():
+        from src.fetch_epias_5y import run_fetch_epias_5y_features
+
+        names = [x.strip() for x in args.only_features.split(",") if x.strip()]
+        print(f"=== Seçili EPİAŞ serileri: {names} ===")
+        run_fetch_epias_5y_features(names, force_refetch=True)
+        return
 
     if args.use_fallback_raw:
         from src.build_hourly_dataset_5y import enable_fallback_raw_dir

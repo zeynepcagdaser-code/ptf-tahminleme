@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.config import PROJECT_ROOT
 from src.dl_5y_config import RAW_5Y_DIR, START_DATE_5Y, end_date_5y
-from src.epias_5y_panel import write_fetch_progress
+from src.epias_5y_panel import sync_fetch_live_to_app_data, write_fetch_progress
 from src.fetch_final_selected_features import (
     FinalFeatureSpec,
     FinalSelectedFeatureFetcher,
@@ -130,6 +130,8 @@ EPIAS_5Y_FEATURES: tuple[FinalFeatureSpec, ...] = (
         "/v1/markets/dam/data/supply-demand",
         "hourly",
         "dam_supply_demand.csv",
+        sort_field="price",
+        date_mode="single",
     ),
     FinalFeatureSpec(
         "dam_trade_volume",
@@ -172,6 +174,7 @@ EPIAS_5Y_FEATURES: tuple[FinalFeatureSpec, ...] = (
         "/v1/markets/idm/data/trade-value",
         "hourly",
         "idm_trade_value.csv",
+        sort_field="kontratTuru",
     ),
     FinalFeatureSpec(
         "imbalance_quantity",
@@ -456,3 +459,48 @@ def run_fetch_epias_5y(
         "failed": len(results) - len(ok),
         "raw_dir": str(RAW_5Y_DIR),
     }
+
+
+def run_fetch_epias_5y_features(
+    feature_names: list[str],
+    *,
+    force_refetch: bool = True,
+) -> list[FetchResult]:
+    """Yalnızca seçili serileri çeker (API düzeltme / eksik tamamlama)."""
+    RAW_5Y_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    wanted = {n.strip() for n in feature_names if n.strip()}
+    specs = [s for s in EPIAS_5Y_FEATURES if s.feature_name in wanted]
+    if not specs:
+        raise ValueError(f"Bilinmeyen seri: {feature_names}")
+
+    end = end_date_5y()
+    fetcher = Epias5yFetcher(START_DATE_5Y, end, skip_existing=not force_refetch)
+    results: list[FetchResult] = []
+    total = len(specs)
+    write_fetch_progress(current="başlatılıyor", index=0, total=total, running=True)
+
+    for i, spec in enumerate(specs, start=1):
+        print(f"[FETCH] {spec.feature_name}", flush=True)
+        write_fetch_progress(current=spec.feature_name, index=i, total=total, running=True)
+        result = fetcher.fetch_epias_feature(spec)
+        results.append(result)
+        write_fetch_progress(
+            current=spec.feature_name,
+            index=i,
+            total=total,
+            running=True,
+            last_result=asdict(result),
+        )
+        print(
+            f"   -> {spec.feature_name}: {'OK' if result.success else 'FAIL'} "
+            f"rows={result.rows} source={result.source}",
+            flush=True,
+        )
+
+    write_fetch_progress(current=None, index=total, total=total, running=False)
+    pd.DataFrame([asdict(r) for r in results]).to_csv(
+        LOG_DIR / "epias_5y_fetch_retry_status.csv", index=False
+    )
+    sync_fetch_live_to_app_data()
+    return results
