@@ -236,6 +236,47 @@ def load_dl_metrics_5y() -> dict:
     return {}
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_dl_live_forecast_5y(model_type: str) -> pd.DataFrame:
+    try:
+        from src.dl_5y_inference import predict_next_12h_from_5y
+    except Exception:
+        return pd.DataFrame()
+    try:
+        dl = predict_next_12h_from_5y(model_type=model_type)  # type: ignore[arg-type]
+        df = dl.output.copy()
+        df["model_name"] = f"dl_{model_type}"
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _extract_panel_12h_forecast(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    if "issue_datetime" in out.columns:
+        out["issue_datetime"] = pd.to_datetime(out["issue_datetime"], errors="coerce")
+    if "target_datetime" in out.columns:
+        out["target_datetime"] = pd.to_datetime(out["target_datetime"], errors="coerce")
+    if "forecast_horizon" in out.columns:
+        out["forecast_horizon"] = pd.to_numeric(out["forecast_horizon"], errors="coerce")
+
+    pred_col = None
+    for c in ("ensemble_ptf", "predicted_ptf", "final_predicted_ptf"):
+        if c in out.columns:
+            pred_col = c
+            break
+    if pred_col is None:
+        return pd.DataFrame()
+
+    out = out.dropna(subset=["target_datetime", "forecast_horizon"]).sort_values("forecast_horizon")
+    out = out.rename(columns={pred_col: "predicted_ptf"})
+    out["model_name"] = "panel"
+    keep = ["issue_datetime", "target_datetime", "forecast_horizon", "predicted_ptf", "model_name"]
+    return out[keep]
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_live_bundle() -> pd.DataFrame:
     live_path = PANEL_SOURCES.live_forecast_path
@@ -594,6 +635,69 @@ if view_mode == "Genel Bakış":
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         )
                         st.plotly_chart(fig, width="stretch")
+
+                        # --- DL comparison: latest 12h forecast (LSTM vs CNN-LSTM) ---
+                        with st.expander("DL Tahminleri (LSTM / CNN-LSTM) — Latest 12 Saat", expanded=False):
+                            panel_live = _extract_panel_12h_forecast(load_live_bundle())
+                            dl_cnn = load_dl_live_forecast_5y("cnn_lstm")
+                            dl_lstm = load_dl_live_forecast_5y("lstm")
+
+                            frames = []
+                            if not panel_live.empty:
+                                frames.append(panel_live)
+                            if not dl_cnn.empty:
+                                frames.append(
+                                    dl_cnn[["issue_datetime", "target_datetime", "forecast_horizon", "predicted_ptf"]]
+                                    .assign(model_name="cnn_lstm")
+                                )
+                            if not dl_lstm.empty:
+                                frames.append(
+                                    dl_lstm[["issue_datetime", "target_datetime", "forecast_horizon", "predicted_ptf"]]
+                                    .assign(model_name="lstm")
+                                )
+
+                            if not frames:
+                                st.info("DL tahmini için gerekli dosyalar/bağımlılıklar bulunamadı.")
+                            else:
+                                comp = pd.concat(frames, ignore_index=True)
+                                comp["target_datetime"] = pd.to_datetime(comp["target_datetime"], errors="coerce")
+                                comp = comp.dropna(subset=["target_datetime", "forecast_horizon", "predicted_ptf"])
+                                comp = comp.sort_values(["model_name", "forecast_horizon"])
+
+                                fig2 = go.Figure()
+                                for name, color, dash in [
+                                    ("panel", "#10b981", "solid"),
+                                    ("cnn_lstm", "#0ea5e9", "dash"),
+                                    ("lstm", "#f59e0b", "dot"),
+                                ]:
+                                    sub = comp[comp["model_name"] == name]
+                                    if sub.empty:
+                                        continue
+                                    fig2.add_trace(
+                                        go.Scatter(
+                                            x=sub["target_datetime"],
+                                            y=sub["predicted_ptf"],
+                                            mode="lines+markers",
+                                            name=name,
+                                            line=dict(color=color, width=2.5, dash=dash),
+                                            marker=dict(size=7),
+                                        )
+                                    )
+                                fig2.update_layout(
+                                    height=420,
+                                    margin=dict(l=20, r=20, t=30, b=20),
+                                    hovermode="x unified",
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                                )
+                                st.plotly_chart(fig2, width="stretch")
+
+                                wide = comp.pivot_table(
+                                    index=["forecast_horizon", "target_datetime"],
+                                    columns="model_name",
+                                    values="predicted_ptf",
+                                    aggfunc="first",
+                                ).reset_index().sort_values("forecast_horizon")
+                                st.dataframe(wide, width="stretch", hide_index=True)
     
     else:
         st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
