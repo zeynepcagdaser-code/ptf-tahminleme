@@ -600,30 +600,43 @@ if view_mode == "Genel Bakış":
 # --- Data Section ---
 elif view_mode == "Veriler":
     st.markdown("## 🗂️ Veriler")
-    st.caption("Bu sayfa, panelin kullandığı son `final_hourly_dataset.csv` verisini gösterir.")
+    st.caption("Bu sayfa, analiz ve modelleme icin kullanilan saatlik veriyi gosterir.")
 
-    if final_dataset.empty:
-        st.error("Final veriseti bulunamadı (`data/processed/final_hourly_dataset.csv`).")
+    # Default: active hourly dataset (may start at 2025). If 5Y dataset exists, prefer it (starts at 2020).
+    data_df = final_dataset
+    data_label = f"Aktif veri: `{PANEL_SOURCES.hourly_dataset_path.name}`"
+    if HOURLY_5Y_PATH.exists():
+        try:
+            h5 = pd.read_csv(HOURLY_5Y_PATH)
+            h5 = _coerce_datetime_col(h5, "datetime")
+            data_df = h5
+            data_label = f"5Y veri: `{HOURLY_5Y_PATH.name}` (2020+)"
+        except Exception:
+            pass
+    st.info(data_label)
+
+    if data_df.empty:
+        st.error("Veriseti bulunamadi. (Aktif dataset ve 5Y dataset yok)")
         st.markdown("Panel içinde canlı veri çekip dataset üretmek için sol menüden **Veriyi Güncelle** butonunu kullanın.")
     else:
         st.success(
-            f"Yüklendi: {len(final_dataset):,} satır, {final_dataset.shape[1]} kolon | "
-            f"Aralık: {final_dataset['datetime'].min()} → {final_dataset['datetime'].max()}"
+            f"Yüklendi: {len(data_df):,} satır, {data_df.shape[1]} kolon | "
+            f"Aralık: {data_df['datetime'].min()} → {data_df['datetime'].max()}"
         )
 
         st.markdown("### Son Kayıtlar")
         n = st.slider("Gösterilecek satır sayısı", min_value=50, max_value=5000, value=500, step=50)
-        df_tail = final_dataset.sort_values("datetime").tail(int(n)).copy()
+        df_tail = data_df.sort_values("datetime").tail(int(n)).copy()
         st.dataframe(df_tail, width="stretch", hide_index=True)
 
         st.markdown("### PTF Grafiği (Son 7 Gün)")
         # Some variants (5Y bridge) may not have `ptf` column; fall back gracefully.
-        ptf_col = "ptf" if "ptf" in final_dataset.columns else ("ptf_kesinlesmis" if "ptf_kesinlesmis" in final_dataset.columns else None)
+        ptf_col = "ptf" if "ptf" in data_df.columns else ("ptf_kesinlesmis" if "ptf_kesinlesmis" in data_df.columns else None)
         if ptf_col is None:
             st.warning("Bu dataset'te PTF kolonu bulunamadı.")
             df_plot = pd.DataFrame()
         else:
-            df_plot = final_dataset.dropna(subset=["datetime", ptf_col]).sort_values("datetime").copy()
+            df_plot = data_df.dropna(subset=["datetime", ptf_col]).sort_values("datetime").copy()
         if not df_plot.empty:
             end_dt = df_plot["datetime"].max()
             start_dt = end_dt - pd.Timedelta(days=7)
