@@ -42,6 +42,8 @@ LEGACY_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
 BASELINE_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_horizon_metrics.csv"
 LIVE_FORECAST_PATH = PROCESSED / "ptf_12h_live_forecast.csv"
 LIVE_BUNDLE_PATH = PROCESSED / "ptf_12h_live_bundle.csv"
+DL_COMPARISON_5Y_PATH = PROCESSED / "dl_models_comparison_5y.csv"
+DL_METRICS_5Y_PATH = PROCESSED / "dl_models_metrics_5y.json"
 
 PANEL_SOURCES = get_active_panel_sources()
 
@@ -218,6 +220,19 @@ def load_live_forecast_csv() -> pd.DataFrame:
     return df
 
 
+def load_dl_comparison_5y() -> pd.DataFrame:
+    return read_csv(DL_COMPARISON_5Y_PATH)
+
+
+def load_dl_metrics_5y() -> dict:
+    if DL_METRICS_5Y_PATH.exists():
+        try:
+            return json.loads(DL_METRICS_5Y_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_live_bundle() -> pd.DataFrame:
     live_path = PANEL_SOURCES.live_forecast_path
@@ -290,7 +305,7 @@ with st.sidebar:
     st.markdown("### 📊 Görünüm Modu")
     view_mode = st.radio(
         "Seçiniz",
-        ["Genel Bakış", "Veriler", "5Y EPİAŞ Verileri", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
+        ["Genel Bakış", "Veriler", "5Y EPİAŞ Verileri", "DL Modeller (5Y)", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
         label_visibility="collapsed"
     )
     
@@ -843,6 +858,66 @@ elif view_mode == "Ensemble Detayları":
         st.dataframe(pd.DataFrame(weight_data).set_index("Horizon").style.format("{:.1f}%"), width="stretch")
     else:
         st.warning("⚠️ Ensemble ağırlıkları bulunamadı (CatBoost aktif modelde ağırlık tablosu yok).")
+
+
+# --- DL Models (5Y) ---
+elif view_mode == "DL Modeller (5Y)":
+    st.markdown("## 🧠 Derin Öğrenme Modelleri (5Y)")
+    st.caption("Kaynak: `forecast_12h_sequence_dataset_5y.npz` ile eğitilmiş LSTM / CNN-LSTM. (CPU uyumlu hızlı baseline)")
+
+    comp = load_dl_comparison_5y()
+    metrics = load_dl_metrics_5y()
+
+    if comp.empty:
+        st.warning("DL metrikleri bulunamadı (`data/processed/dl_models_comparison_5y.csv`).")
+        st.code("python -c 'from src.train_dl_models_5y import train_dl_baselines_5y; train_dl_baselines_5y()'")
+    else:
+        show = comp.copy()
+        # normalize types
+        for c in ("mae", "rmse", "smape", "r2"):
+            if c in show.columns:
+                show[c] = pd.to_numeric(show[c], errors="coerce")
+        show = show.sort_values("mae")
+
+        best_model = metrics.get("best_model") if isinstance(metrics, dict) else None
+        if not best_model and "model_type" in show.columns and show["mae"].notna().any():
+            best_model = str(show.iloc[0]["model_type"])
+
+        cols = st.columns(3)
+        cols[0].metric("Model sayısı", int(len(show)))
+        cols[1].metric("En iyi model", best_model or "-")
+        if best_model and "mae" in show.columns and show["mae"].notna().any():
+            best_row = show[show["model_type"] == best_model].head(1)
+            if not best_row.empty:
+                cols[2].metric("En iyi MAE", f"{float(best_row.iloc[0]['mae']):.1f}")
+            else:
+                cols[2].metric("En iyi MAE", f"{float(show.iloc[0]['mae']):.1f}")
+
+        st.markdown("### Sonuç Tablosu")
+        st.dataframe(
+            show.style.format({"mae": "{:.2f}", "rmse": "{:.2f}", "smape": "{:.2f}", "r2": "{:.4f}", "train_seconds": "{:.0f}"}),
+            width="stretch",
+            hide_index=True,
+        )
+
+        st.markdown("### Grafik")
+        metric_choice = st.selectbox("Metrik", options=["mae", "rmse", "smape", "r2"], index=0)
+        if metric_choice in show.columns:
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=show["model_type"],
+                    y=show[metric_choice],
+                    marker_color=["#10b981" if str(m) == str(best_model) else "#94a3b8" for m in show["model_type"]],
+                )
+            )
+            title_map = {"mae": "MAE (düşük iyi)", "rmse": "RMSE (düşük iyi)", "smape": "SMAPE (düşük iyi)", "r2": "R² (yüksek iyi)"}
+            fig.update_layout(
+                title=f"DL Model Karşılaştırma — {title_map.get(metric_choice, metric_choice)}",
+                height=420,
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(fig, width="stretch")
 
 
 # --- Live Forecast Section ---
