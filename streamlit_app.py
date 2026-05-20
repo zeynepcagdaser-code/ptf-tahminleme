@@ -321,6 +321,15 @@ with st.sidebar:
     else:
         st.caption("Kaynak: legacy final ensemble")
 
+    st.markdown("### 🤖 Tahmin Modeli")
+    forecast_model = st.selectbox(
+        "Seçiniz",
+        ["Final Ensemble", "CNN-LSTM (5Y)", "LSTM (5Y)"],
+        index=0,
+        label_visibility="collapsed",
+        key="forecast_model_choice",
+    )
+
     refresh = st.button("🔄 Veriyi Güncelle", type="primary", width="stretch")
     st.caption("EPİAŞ çekimi + pipeline (kimlik bilgisi gerekli)")
 
@@ -908,7 +917,20 @@ elif view_mode == "Canlı Tahmin":
     st.markdown("## 🔮 Canlı 12 Saat Tahmini")
     st.caption("Kesim anındaki I-MCP, naive baseline, CatBoost ve final ensemble birlikte gösterilir.")
 
-    live_bundle = load_live_bundle()
+    # If user selects DL model, generate a lightweight live forecast using the last available 5Y window.
+    if st.session_state.get("forecast_model_choice") in ("CNN-LSTM (5Y)", "LSTM (5Y)"):
+        try:
+            from src.dl_5y_inference import predict_next_12h_from_5y
+
+            mt = "cnn_lstm" if st.session_state.get("forecast_model_choice") == "CNN-LSTM (5Y)" else "lstm"
+            dl = predict_next_12h_from_5y(model_type=mt)
+            live_bundle = dl.output.rename(columns={"predicted_ptf": "ensemble_ptf"})
+            st.info(f"DL aktif: {dl.model_type} | issue: {dl.issue_datetime}")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"DL live forecast üretilemedi: {exc}")
+            live_bundle = load_live_bundle()
+    else:
+        live_bundle = load_live_bundle()
     if live_bundle.empty and not live_df.empty:
         rename_map = {}
         if "predicted_ptf" in live_df.columns and "ensemble_ptf" not in live_df.columns:
