@@ -153,6 +153,20 @@ def _coerce_datetime_col(df: pd.DataFrame, col: str = "datetime") -> pd.DataFram
 @st.cache_data(ttl=600, show_spinner=False)
 def load_final_dataset() -> pd.DataFrame:
     path = PANEL_SOURCES.hourly_dataset_path
+    # Prefer 5Y panel artifact if it exists and is newer (covers more recent datetimes).
+    if PANEL_HOURLY_5Y_PATH.exists():
+        try:
+            cand = pd.read_csv(PANEL_HOURLY_5Y_PATH, usecols=["datetime"])
+            cand_end = pd.to_datetime(cand["datetime"], errors="coerce").dropna().max()
+        except Exception:
+            cand_end = None
+        try:
+            cur = pd.read_csv(path, usecols=["datetime"]) if path.exists() else None
+            cur_end = pd.to_datetime(cur["datetime"], errors="coerce").dropna().max() if cur is not None else None
+        except Exception:
+            cur_end = None
+        if (cur_end is None and cand_end is not None) or (cand_end is not None and cur_end is not None and cand_end > cur_end):
+            path = PANEL_HOURLY_5Y_PATH
     if not path.exists() and PANEL_HOURLY_5Y_PATH.exists():
         path = PANEL_HOURLY_5Y_PATH
     if not path.exists():

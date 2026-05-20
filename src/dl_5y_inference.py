@@ -39,7 +39,7 @@ def predict_next_12h_from_5y(*, model_type: ModelType = "cnn_lstm") -> DlLiveFor
     model_path = MODELS_DIR / f"best_{model_type}_5y.pt"
     if not model_path.exists():
         raise FileNotFoundError(f"DL model bulunamadi: {model_path}")
-    hourly_path = HOURLY_5Y_PATH if HOURLY_5Y_PATH.exists() else PANEL_HOURLY_5Y_PATH
+    hourly_path = _choose_best_hourly_path()
     if not hourly_path.exists():
         raise FileNotFoundError(f"5y hourly dataset yok: {HOURLY_5Y_PATH} (panel fallback: {PANEL_HOURLY_5Y_PATH})")
     if not SCALERS_5Y_PATH.exists():
@@ -61,8 +61,14 @@ def predict_next_12h_from_5y(*, model_type: ModelType = "cnn_lstm") -> DlLiveFor
         # Fallback: derive numeric cols similarly to build_dl_sequence_dataset_5y
         feature_names = _fallback_feature_names(hourly)
 
+    # Training uses PRICE_COLUMN_5Y (=ptf_price). Panel artifact may only have ptf_kesinlesmis/ptf.
     if PRICE_COLUMN_5Y not in hourly.columns:
-        raise ValueError(f"Target price column missing: {PRICE_COLUMN_5Y}")
+        if "ptf_kesinlesmis" in hourly.columns:
+            hourly[PRICE_COLUMN_5Y] = pd.to_numeric(hourly["ptf_kesinlesmis"], errors="coerce")
+        elif "ptf" in hourly.columns:
+            hourly[PRICE_COLUMN_5Y] = pd.to_numeric(hourly["ptf"], errors="coerce")
+        else:
+            raise ValueError(f"Target price column missing: {PRICE_COLUMN_5Y}")
 
     hourly = _impute_like_training(hourly, feature_names)
     if len(hourly) < INPUT_WINDOW_5Y:
@@ -119,6 +125,31 @@ def _infer_hidden_size(state_dict: dict) -> int:
     if hasattr(cw, "shape") and len(cw.shape) >= 1:
         return int(cw.shape[0])
     raise ValueError("Cannot infer hidden size from checkpoint")
+
+
+def _choose_best_hourly_path() -> Path:
+    """
+    Prefer whichever hourly dataset ends later (covers more recent datetimes).
+    On Streamlit Cloud we usually only have PANEL_HOURLY_5Y_PATH.
+    """
+    candidates = [p for p in (HOURLY_5Y_PATH, PANEL_HOURLY_5Y_PATH) if p.exists()]
+    if not candidates:
+        return HOURLY_5Y_PATH
+
+    best = candidates[0]
+    best_end = None
+    for p in candidates:
+        try:
+            df = pd.read_csv(p, usecols=["datetime"])
+            dt = pd.to_datetime(df["datetime"], errors="coerce").dropna()
+            end = dt.max() if len(dt) else None
+        except Exception:
+            end = None
+        if best_end is None and end is not None:
+            best, best_end = p, end
+        elif end is not None and best_end is not None and end > best_end:
+            best, best_end = p, end
+    return best
 
 
 def _impute_like_training(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
