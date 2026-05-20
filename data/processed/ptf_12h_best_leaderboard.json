@@ -1,0 +1,214 @@
+{
+  "best_track": "catboost",
+  "best_mae": 291.03818404839393,
+  "catboost_mae": 291.03818404839393,
+  "catboost_r2": 0.5240823273376092,
+  "ensemble_mae": 409.04904367125613,
+  "ensemble_r2": 0.7629778820194622,
+  "hybrid_mae": NaN,
+  "ensemble_metrics": {
+    "MAE": 409.04904367125613,
+    "RMSE": 572.8303676727325,
+    "SMAPE": 38.92253609877816,
+    "R2": 0.7629778820194622,
+    "baseline_comparison": {
+      "mae": 564.3398481468329,
+      "rmse": 795.3219285827748,
+      "smape": 57.14177383916073,
+      "r2": 0.5741483871621396
+    },
+    "ensemble_weights": {
+      "1": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.19936146048194867,
+        "pred_kesin_same_hour_last_week": 0.44442917658799497,
+        "pred_kesin_rolling_24h": 0.3562093629300564,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "2": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.2095405521247416,
+        "pred_kesin_same_hour_last_week": 0.4593943306354866,
+        "pred_kesin_rolling_24h": 0.3310651172397718,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "3": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.22373660071822954,
+        "pred_kesin_same_hour_last_week": 0.47905510346051394,
+        "pred_kesin_rolling_24h": 0.2972082958212566,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "4": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.23901296222141713,
+        "pred_kesin_same_hour_last_week": 0.49552826398642347,
+        "pred_kesin_rolling_24h": 0.26545877379215943,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "5": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.2534305962567774,
+        "pred_kesin_same_hour_last_week": 0.5090098623872326,
+        "pred_kesin_rolling_24h": 0.23755954135599006,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "6": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.2668587587346711,
+        "pred_kesin_same_hour_last_week": 0.5206295529447393,
+        "pred_kesin_rolling_24h": 0.21251168832058961,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "7": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.280466400397405,
+        "pred_kesin_same_hour_last_week": 0.5312180896191047,
+        "pred_kesin_rolling_24h": 0.18831550998349042,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "8": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.2959826024030264,
+        "pred_kesin_same_hour_last_week": 0.5413848493444243,
+        "pred_kesin_rolling_24h": 0.16263254825254933,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "9": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.31092283974889007,
+        "pred_kesin_same_hour_last_week": 0.5501566724416906,
+        "pred_kesin_rolling_24h": 0.1389204878094193,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "10": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.3249468946197627,
+        "pred_kesin_same_hour_last_week": 0.5576588241297661,
+        "pred_kesin_rolling_24h": 0.1173942812504712,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "11": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.33950335113884117,
+        "pred_kesin_same_hour_last_week": 0.5656874570209065,
+        "pred_kesin_rolling_24h": 0.09480919184025235,
+        "pred_kesin_rolling_168h": 0.0
+      },
+      "12": {
+        "pred_catboost": 0.0,
+        "pred_seasonal_blend": 0.0,
+        "pred_kesin_same_hour_yesterday": 0.35400064912080126,
+        "pred_kesin_same_hour_last_week": 0.5733602921697599,
+        "pred_kesin_rolling_24h": 0.07263905870943886,
+        "pred_kesin_rolling_168h": 0.0
+      }
+    },
+    "blend_weights": {
+      "1": 0.7224999999999999,
+      "2": 0.73,
+      "3": 0.45,
+      "4": 0.2,
+      "5": 0.07500000000000001,
+      "6": 0.0,
+      "7": 0.1,
+      "8": 0.0,
+      "9": 0.0,
+      "10": 0.07500000000000001,
+      "11": 0.0,
+      "12": 0.07500000000000001
+    },
+    "bias_corrections": {
+      "1": 4.232065268972963,
+      "2": 4.238150926103067,
+      "3": 4.227475553452956,
+      "4": 4.16289986098203,
+      "5": 3.8876618101476765,
+      "6": 3.553130867558417,
+      "7": 3.23074754982328,
+      "8": 3.0178093649807205,
+      "9": 2.8488425323123057,
+      "10": 2.7041272583296223,
+      "11": 2.7833060950422914,
+      "12": 2.8745265079060816
+    },
+    "primary_model_by_horizon": {
+      "1": "catboost",
+      "2": "catboost",
+      "3": "catboost",
+      "4": "catboost",
+      "5": "catboost",
+      "6": "catboost",
+      "7": "catboost",
+      "8": "catboost",
+      "9": "catboost",
+      "10": "catboost",
+      "11": "catboost",
+      "12": "catboost"
+    },
+    "clip_bounds": {
+      "1": {
+        "lower": 0.0,
+        "upper": 15000.0
+      },
+      "2": {
+        "lower": 0.0,
+        "upper": 15000.0
+      },
+      "3": {
+        "lower": 0.0,
+        "upper": 15000.0
+      },
+      "4": {
+        "lower": 889.452457514881,
+        "upper": 2628.2880087351186
+      },
+      "5": {
+        "lower": 886.6837694642857,
+        "upper": 2628.4051958184523
+      },
+      "6": {
+        "lower": 886.9744663392856,
+        "upper": 2628.421300595238
+      },
+      "7": {
+        "lower": 888.440806532738,
+        "upper": 2628.421300595238
+      },
+      "8": {
+        "lower": 885.9677822321428,
+        "upper": 2628.3412326636903
+      },
+      "9": {
+        "lower": 884.8575276190475,
+        "upper": 2628.3412326636903
+      },
+      "10": {
+        "lower": 885.9605100446429,
+        "upper": 2628.0647257142855
+      },
+      "11": {
+        "lower": 887.9471143154763,
+        "upper": 2627.9960120238093
+      },
+      "12": {
+        "lower": 890.029427797619,
+        "upper": 2627.943231130952
+      }
+    },
+    "trend_penalty_lambda": 0.25
+  },
+  "data_years": "2020-2024 (43800h)",
+  "predictions_path": "/Users/salihcagdaser/Desktop/son tez 12 mayıs/ptf_tahmin_uygulamasi/data/processed/ptf_12h_best_predictions.csv"
+}

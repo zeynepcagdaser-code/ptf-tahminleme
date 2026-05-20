@@ -13,6 +13,10 @@ data/processed/*
 !data/processed/ptf_12h_final_horizon_metrics.csv
 !data/processed/ptf_12h_horizon_metrics.csv
 !data/processed/ptf_12h_live_forecast.csv
+!data/processed/ptf_12h_metrics_best.json
+!data/processed/ptf_12h_best_horizon_metrics.csv
+!data/processed/ptf_12h_best_leaderboard.json
+!data/processed/ptf_12h_best_live_forecast.csv
 catboost_info/
 *.pkl
 *.cbm

@@ -13,6 +13,12 @@ from plotly.subplots import make_subplots
 
 from src.config import PROJECT_ROOT
 from src.dl_5y_config import HOURLY_5Y_PATH, START_DATE_5Y
+from src.panel_data import (
+    DASHBOARD_DATA_PATH,
+    get_active_panel_sources,
+    load_active_metrics,
+    load_leaderboard,
+)
 from src.epias_5y_panel import (
     FEATURE_LABELS,
     FETCH_LIVE_APP_PATH,
@@ -29,18 +35,19 @@ from src.epias_5y_panel import (
 
 ROOT = Path(__file__).resolve().parent
 PROCESSED = ROOT / "data" / "processed"
-APP_DATA_PATH = ROOT / "app_data" / "dashboard_data.json"
-FINAL_DATASET_PATH = PROCESSED / "final_hourly_dataset.csv"
-FINAL_METRICS_PATH = PROCESSED / "ptf_12h_final_metrics.json"
-FINAL_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
-FINAL_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
+APP_DATA_PATH = DASHBOARD_DATA_PATH
+LEGACY_METRICS_PATH = PROCESSED / "ptf_12h_final_metrics.json"
+LEGACY_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
+LEGACY_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
 BASELINE_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_horizon_metrics.csv"
 LIVE_FORECAST_PATH = PROCESSED / "ptf_12h_live_forecast.csv"
 LIVE_BUNDLE_PATH = PROCESSED / "ptf_12h_live_bundle.csv"
 
+PANEL_SOURCES = get_active_panel_sources()
+
 
 st.set_page_config(
-    page_title="PTF 12 Saat Tahmin - Ensemble Sistemi",
+    page_title="PTF 12 Saat Tahmin - 5Y Best",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -94,17 +101,26 @@ def read_csv(path: Path) -> pd.DataFrame:
 
 
 def load_final_metrics() -> dict:
-    if FINAL_METRICS_PATH.exists():
-        return json.loads(FINAL_METRICS_PATH.read_text(encoding="utf-8"))
-    return {}
+    return load_active_metrics()
 
 
 def load_final_predictions() -> pd.DataFrame:
-    return read_csv(FINAL_PREDICTIONS_PATH)
+    if PANEL_SOURCES.predictions_path.exists():
+        return read_csv(PANEL_SOURCES.predictions_path)
+    return read_csv(ROOT / "app_data" / "ptf_12h_best_predictions_sample.csv")
 
 
 def load_final_horizon_metrics() -> pd.DataFrame:
-    return read_csv(FINAL_HORIZON_METRICS_PATH)
+    path = PANEL_SOURCES.horizon_metrics_path
+    if path.suffix == ".csv":
+        return read_csv(path)
+    return pd.DataFrame()
+
+
+def load_legacy_metrics() -> dict:
+    if LEGACY_METRICS_PATH.exists():
+        return json.loads(LEGACY_METRICS_PATH.read_text(encoding="utf-8"))
+    return {}
 
 
 def load_baseline_horizon_metrics() -> pd.DataFrame:
@@ -133,9 +149,10 @@ def _coerce_datetime_col(df: pd.DataFrame, col: str = "datetime") -> pd.DataFram
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_final_dataset() -> pd.DataFrame:
-    if not FINAL_DATASET_PATH.exists():
+    path = PANEL_SOURCES.hourly_dataset_path
+    if not path.exists():
         return pd.DataFrame()
-    df = pd.read_csv(FINAL_DATASET_PATH)
+    df = pd.read_csv(path)
     df = _coerce_datetime_col(df, "datetime")
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
@@ -203,7 +220,8 @@ def load_live_forecast_csv() -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_live_bundle() -> pd.DataFrame:
-    df = read_csv(LIVE_BUNDLE_PATH)
+    live_path = PANEL_SOURCES.live_forecast_path
+    df = read_csv(live_path if live_path.exists() else LIVE_BUNDLE_PATH)
     if df.empty:
         return df
     for c in ("issue_datetime", "target_datetime"):
@@ -239,6 +257,8 @@ def load_final_predictions_prepared() -> pd.DataFrame:
         out["predicted_ptf"] = out["panel_predicted_ptf"]
     elif "final_predicted_ptf" in out.columns and "predicted_ptf" not in out.columns:
         out = out.rename(columns={"final_predicted_ptf": "predicted_ptf"})
+    elif "predicted_ptf" in out.columns and "actual_ptf" not in out.columns and "ptf_target" in out.columns:
+        out["actual_ptf"] = out["ptf_target"]
 
     if "pred_catboost_export" in out.columns and "pred_catboost" not in out.columns:
         out["pred_catboost"] = out["pred_catboost_export"]
@@ -310,8 +330,14 @@ with st.sidebar:
         """)
     
     st.markdown("---")
+    st.success(f"**Aktif model:** {PANEL_SOURCES.label}")
+    if PANEL_SOURCES.is_best_5y:
+        st.caption("Kaynak: 5 yıllık EPİAŞ paneli + CatBoost")
+    else:
+        st.caption("Kaynak: legacy final ensemble")
+
     refresh = st.button("🔄 Veriyi Güncelle", type="primary", width="stretch")
-    st.caption("EPİAŞ verisi çekmek için kimlik bilgisi gerekli")
+    st.caption("EPİAŞ çekimi + pipeline (kimlik bilgisi gerekli)")
 
 
 if refresh:
@@ -333,6 +359,8 @@ else:
 
 # Load data
 final_metrics = data
+leaderboard = load_leaderboard()
+legacy_metrics = load_legacy_metrics()
 final_preds = load_final_predictions_prepared()
 final_horizon = load_final_horizon_metrics()
 baseline_horizon = load_baseline_horizon_metrics()
@@ -348,11 +376,17 @@ else:
 
 
 # --- Hero Section ---
+_active_mae = final_metrics.get("MAE", 0) if final_metrics else 0
+_hero_sub = (
+    f"5 yıllık veri (2020–2024) ile eğitilmiş CatBoost — test MAE ≈ {_active_mae:.0f} TL/MWh."
+    if PANEL_SOURCES.is_best_5y
+    else "Kesinleşmemiş PTF (I-MCP) ile 12 saat MCP tahmini (legacy ensemble)."
+)
 st.markdown(
-    """
+    f"""
     <div class="hero">
-      <h1>⚡ PTF 12 Saat Tahmin Sistemi - Ensemble Model</h1>
-      <p>Kesinleşmemiş PTF (I-MCP) kullanarak gelecek 12 saat için kesinleşmiş PTF (MCP) tahmini. Ensemble sistemi ile %46 MAE iyileştirmesi.</p>
+      <h1>⚡ PTF 12 Saat Tahmin — {PANEL_SOURCES.label}</h1>
+      <p>{_hero_sub}</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -439,15 +473,41 @@ if view_mode == "Genel Bakış":
         with col1:
             st.info(f"📊 **Veri Seti Boyutu:** {final_preds.shape[0] if not final_preds.empty else 0:,} satır")
         with col2:
-            st.info(f"🎯 **Model Tipi:** Ensemble + Bias Correction")
+            st.info(f"🎯 **Model:** {PANEL_SOURCES.label}")
         with col3:
             if dashboard_data:
                 st.info(f"🕐 **Son Güncelleme:** {dashboard_data.get('generated_at', '-')[:16]}")
 
         st.markdown("---")
         st.markdown("### 📉 Gerçek vs Tahmin")
+        if leaderboard and PANEL_SOURCES.is_best_5y:
+            with st.expander("5Y model karşılaştırması (leaderboard)", expanded=False):
+                comp_rows = [
+                    {
+                        "Model": "CatBoost 5Y (aktif)",
+                        "MAE": leaderboard.get("catboost_mae"),
+                        "R²": leaderboard.get("catboost_r2"),
+                    },
+                    {
+                        "Model": "Ensemble 5Y",
+                        "MAE": leaderboard.get("ensemble_mae"),
+                        "R²": leaderboard.get("ensemble_r2"),
+                    },
+                ]
+                if legacy_metrics:
+                    comp_rows.append(
+                        {
+                            "Model": "Final ensemble (eski ~1y)",
+                            "MAE": legacy_metrics.get("MAE"),
+                            "R²": legacy_metrics.get("R2"),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(comp_rows), width="stretch", hide_index=True)
+
         if final_preds.empty:
-            st.warning("Final ensemble tahmin dosyası bulunamadı (`data/processed/ptf_12h_final_predictions.csv`).")
+            st.warning(
+                f"Tahmin dosyası bulunamadı: `{PANEL_SOURCES.predictions_path.relative_to(ROOT)}`"
+            )
         else:
             preds = final_preds.copy()
             required = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
@@ -765,8 +825,24 @@ elif view_mode == "Ensemble Detayları":
         - **Rolling 24h önemli**: Kısa horizonlarda günlük desenler etkili
         - **Bias düzeltmeleri negatif**: Sistemik underprediction'ı düzeltiyor
         """)
+    elif PANEL_SOURCES.is_best_5y and leaderboard.get("ensemble_metrics", {}).get("ensemble_weights"):
+        st.info("Aktif model CatBoost; aşağıda 5Y ensemble ağırlıkları (karşılaştırma).")
+        em = leaderboard["ensemble_metrics"]
+        weights = em["ensemble_weights"]
+        bias = em.get("bias_corrections", {})
+        weight_data = []
+        for horizon in range(1, 13):
+            w = weights.get(str(horizon), weights.get(horizon, {}))
+            weight_data.append({
+                "Horizon": f"{horizon}h",
+                "CatBoost": w.get("pred_catboost", 0) * 100,
+                "Dün Aynı Saat": w.get("pred_kesin_same_hour_yesterday", 0) * 100,
+                "Geçen Hafta": w.get("pred_kesin_same_hour_last_week", 0) * 100,
+                "Rolling 24s": w.get("pred_kesin_rolling_24h", 0) * 100,
+            })
+        st.dataframe(pd.DataFrame(weight_data).set_index("Horizon").style.format("{:.1f}%"), width="stretch")
     else:
-        st.warning("⚠️ Ensemble ağırlıkları bulunamadı.")
+        st.warning("⚠️ Ensemble ağırlıkları bulunamadı (CatBoost aktif modelde ağırlık tablosu yok).")
 
 
 # --- Live Forecast Section ---
