@@ -617,7 +617,13 @@ elif view_mode == "Veriler":
         st.dataframe(df_tail, width="stretch", hide_index=True)
 
         st.markdown("### PTF Grafiği (Son 7 Gün)")
-        df_plot = final_dataset.dropna(subset=["datetime", "ptf"]).sort_values("datetime").copy()
+        # Some variants (5Y bridge) may not have `ptf` column; fall back gracefully.
+        ptf_col = "ptf" if "ptf" in final_dataset.columns else ("ptf_kesinlesmis" if "ptf_kesinlesmis" in final_dataset.columns else None)
+        if ptf_col is None:
+            st.warning("Bu dataset'te PTF kolonu bulunamadı.")
+            df_plot = pd.DataFrame()
+        else:
+            df_plot = final_dataset.dropna(subset=["datetime", ptf_col]).sort_values("datetime").copy()
         if not df_plot.empty:
             end_dt = df_plot["datetime"].max()
             start_dt = end_dt - pd.Timedelta(days=7)
@@ -626,7 +632,7 @@ elif view_mode == "Veriler":
             fig.add_trace(
                 go.Scatter(
                     x=df_plot["datetime"],
-                    y=df_plot["ptf"],
+                    y=df_plot[ptf_col],
                     mode="lines",
                     name="PTF",
                     line=dict(color="#0ea5e9", width=2),
