@@ -12,6 +12,7 @@ from src.dl_5y_config import HOURLY_5Y_PATH, INPUT_WINDOW_5Y, OUTPUT_HORIZON_5Y,
 
 
 MODELS_DIR = PROJECT_ROOT / "data" / "models" / "dl_5y"
+PANEL_HOURLY_5Y_PATH = PROJECT_ROOT / "app_data" / "panel_hourly_5y.csv"
 
 
 ModelType = Literal["lstm", "cnn_lstm"]
@@ -38,8 +39,9 @@ def predict_next_12h_from_5y(*, model_type: ModelType = "cnn_lstm") -> DlLiveFor
     model_path = MODELS_DIR / f"best_{model_type}_5y.pt"
     if not model_path.exists():
         raise FileNotFoundError(f"DL model bulunamadi: {model_path}")
-    if not HOURLY_5Y_PATH.exists():
-        raise FileNotFoundError(f"5y hourly dataset yok: {HOURLY_5Y_PATH}")
+    hourly_path = HOURLY_5Y_PATH if HOURLY_5Y_PATH.exists() else PANEL_HOURLY_5Y_PATH
+    if not hourly_path.exists():
+        raise FileNotFoundError(f"5y hourly dataset yok: {HOURLY_5Y_PATH} (panel fallback: {PANEL_HOURLY_5Y_PATH})")
     if not SCALERS_5Y_PATH.exists():
         raise FileNotFoundError(f"scalers_5y.pkl yok: {SCALERS_5Y_PATH}")
 
@@ -51,7 +53,7 @@ def predict_next_12h_from_5y(*, model_type: ModelType = "cnn_lstm") -> DlLiveFor
     y_scaler = scalers["y_scaler"]
     feature_names = list(scalers.get("feature_names") or [])
 
-    hourly = pd.read_csv(HOURLY_5Y_PATH)
+    hourly = pd.read_csv(hourly_path)
     hourly["datetime"] = pd.to_datetime(hourly["datetime"], errors="coerce")
     hourly = hourly.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
 

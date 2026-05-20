@@ -36,6 +36,7 @@ from src.epias_5y_panel import (
 ROOT = Path(__file__).resolve().parent
 PROCESSED = ROOT / "data" / "processed"
 APP_DATA_PATH = DASHBOARD_DATA_PATH
+PANEL_HOURLY_5Y_PATH = ROOT / "app_data" / "panel_hourly_5y.csv"
 LEGACY_METRICS_PATH = PROCESSED / "ptf_12h_final_metrics.json"
 LEGACY_PREDICTIONS_PATH = PROCESSED / "ptf_12h_final_predictions.csv"
 LEGACY_HORIZON_METRICS_PATH = PROCESSED / "ptf_12h_final_horizon_metrics.csv"
@@ -152,6 +153,8 @@ def _coerce_datetime_col(df: pd.DataFrame, col: str = "datetime") -> pd.DataFram
 @st.cache_data(ttl=600, show_spinner=False)
 def load_final_dataset() -> pd.DataFrame:
     path = PANEL_SOURCES.hourly_dataset_path
+    if not path.exists() and PANEL_HOURLY_5Y_PATH.exists():
+        path = PANEL_HOURLY_5Y_PATH
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_csv(path)
