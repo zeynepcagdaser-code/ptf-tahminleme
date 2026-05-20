@@ -1,0 +1,24 @@
+{
+  "models": [
+    {
+      "model_type": "lstm",
+      "mae": 429.2064514160156,
+      "rmse": 524.4311799464253,
+      "smape": 23.4393367767334,
+      "r2": 0.36896657943725586,
+      "epochs_ran": 7,
+      "train_seconds": 272.1316351890564
+    },
+    {
+      "model_type": "cnn_lstm",
+      "mae": 403.9454345703125,
+      "rmse": 510.70092764748335,
+      "smape": 23.005373001098633,
+      "r2": 0.4015764594078064,
+      "epochs_ran": 7,
+      "train_seconds": 283.57406210899353
+    }
+  ],
+  "best_model": "cnn_lstm",
+  "sequence_npz": "/Users/salihcagdaser/Desktop/son tez 12 mayıs/ptf_tahmin_uygulamasi/data/processed/forecast_12h_sequence_dataset_5y.npz"
+}
