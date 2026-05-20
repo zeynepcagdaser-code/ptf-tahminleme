@@ -1,13 +1,32 @@
 {
-  "updated_at": "2026-05-20 14:06:55",
-  "running": true,
-  "progress": {},
+  "updated_at": "2026-05-20 14:32:47",
+  "running": false,
+  "progress": {
+    "updated_at": "2026-05-20T14:31:45",
+    "running": false,
+    "current": null,
+    "index": 1,
+    "total": 1,
+    "completed": [
+      "idm_trade_value"
+    ],
+    "last_result": null,
+    "newest_file": "idm_trade_value.csv",
+    "newest_file_mtime": "2026-05-20 14:31:33",
+    "inventory": {
+      "total": 26,
+      "full": 22,
+      "partial": 0,
+      "short": 1,
+      "missing": 3
+    }
+  },
   "stats": {
     "total": 26,
-    "full": 20,
+    "full": 22,
     "partial": 0,
-    "short": 1,
-    "missing": 5
+    "short": 2,
+    "missing": 2
   },
   "series": [
     {
@@ -18,7 +37,7 @@
       "Son tarih": "2026-05-18 23:00:00",
       "Kapsam %": 99.9,
       "Durum": "Tam (5y)",
-      "Kaynak": "api_merged"
+      "Kaynak": "cached_local"
     },
     {
       "Dosya": "ptf_kesinlesmis.csv",
@@ -28,7 +47,7 @@
       "Son tarih": "2026-05-19 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "load_forecast_plan.csv",
@@ -38,7 +57,7 @@
       "Son tarih": "2026-05-21 22:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "real_time_consumption.csv",
@@ -48,7 +67,7 @@
       "Son tarih": "2026-05-20 12:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "realtime_generation.csv",
@@ -58,7 +77,7 @@
       "Son tarih": "2026-05-20 12:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "res_generation_forecast.csv",
@@ -98,7 +117,7 @@
       "Son tarih": "2026-04-30 23:00:00",
       "Kapsam %": 99.1,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "smf.csv",
@@ -108,7 +127,7 @@
       "Son tarih": "2026-05-19 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "system_direction.csv",
@@ -128,7 +147,7 @@
       "Son tarih": "2026-05-19 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "gop_fiyattan_bagimsiz_satis.csv",
@@ -138,7 +157,7 @@
       "Son tarih": "2026-05-19 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "grf_tl.csv",
@@ -148,26 +167,26 @@
       "Son tarih": "2026-05-19 00:00:00",
       "Kapsam %": 99.9,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api_merged"
     },
     {
       "Dosya": "usd_try.csv",
       "Seri": "USD/TRY",
-      "Satır": 349,
-      "İlk tarih": "2024-12-31 03:00:00",
-      "Son tarih": "2026-05-15 03:00:00",
-      "Kapsam %": 21.4,
-      "Durum": "Kısa (~1 yıl)",
-      "Kaynak": "failed"
+      "Satır": 1634,
+      "İlk tarih": "2019-12-31 03:00:00",
+      "Son tarih": "2026-05-19 03:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "frankfurter"
     },
     {
       "Dosya": "dam_supply_demand.csv",
       "Seri": "GOP arz-talep",
-      "Satır": 0,
-      "İlk tarih": NaN,
-      "Son tarih": NaN,
-      "Kapsam %": 0.0,
-      "Durum": "Yok",
+      "Satır": 2024,
+      "İlk tarih": "2024-05-18 00:00:00",
+      "Son tarih": "2024-05-20 00:00:00",
+      "Kapsam %": 0.1,
+      "Durum": "Kısa (~1 yıl)",
       "Kaynak": "failed"
     },
     {
@@ -178,7 +197,7 @@
       "Son tarih": "2026-05-19 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "dam_clearing_quantity.csv",
@@ -188,7 +207,7 @@
       "Son tarih": "2026-05-20 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "bpm_order_summary_up.csv",
@@ -198,7 +217,7 @@
       "Son tarih": "2026-05-20 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "bpm_order_summary_down.csv",
@@ -208,7 +227,7 @@
       "Son tarih": "2026-05-20 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "idm_weighted_average_price.csv",
@@ -218,16 +237,16 @@
       "Son tarih": "2026-05-20 23:00:00",
       "Kapsam %": 100.0,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "idm_trade_value.csv",
       "Seri": "GİP işlem hacmi",
-      "Satır": 0,
+      "Satır": 113400,
       "İlk tarih": NaN,
       "Son tarih": NaN,
       "Kapsam %": 0.0,
-      "Durum": "Yok",
+      "Durum": "Kısa (~1 yıl)",
       "Kaynak": "failed"
     },
     {
@@ -238,7 +257,7 @@
       "Son tarih": "2026-04-30 23:00:00",
       "Kapsam %": 99.1,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "imbalance_amount.csv",
@@ -248,17 +267,17 @@
       "Son tarih": "2026-04-30 23:00:00",
       "Kapsam %": 99.1,
       "Durum": "Tam (5y)",
-      "Kaynak": "failed"
+      "Kaynak": "api"
     },
     {
       "Dosya": "yek_generation_cost.csv",
       "Seri": "YEK üretim maliyeti (aylık)",
-      "Satır": 0,
-      "İlk tarih": NaN,
-      "Son tarih": NaN,
-      "Kapsam %": 0.0,
-      "Durum": "Yok",
-      "Kaynak": "failed"
+      "Satır": 55488,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-04-30 23:00:00",
+      "Kapsam %": 99.1,
+      "Durum": "Tam (5y)",
+      "Kaynak": "api"
     },
     {
       "Dosya": "yek_portfolio_income.csv",
