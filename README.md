@@ -124,6 +124,17 @@ Panel (`streamlit_app.py`) final ensemble metriklerini ve canli karsilastirmayi 
 
 Asagidaki dosyalar **ana pipeline'a bagli degildir** (D+2, 24h, deneme LSTM vb.). Liste: `docs/legacy_modules.md`.
 
+## 5Y fetch — panel + GitHub canlı özet
+
+Yerel çekim sırasında Streamlit paneli **5Y EPİAŞ Verileri** sekmesinde ilerlemeyi gösterir.
+Streamlit Cloud ham CSV okuyamaz; `app_data/epias_5y_fetch_live.json` push edilir:
+
+```zsh
+python scripts/push_fetch_live_to_github.py
+# veya çekim + otomatik push:
+python scripts/watch_5y_fetch.py --push-github
+```
+
 ## Streamlit Cloud Deploy
 
 Streamlit Community Cloud'da Python surumu repo icindeki `runtime.txt` ile degil,
@@ -144,6 +155,25 @@ Python version: 3.11
 ```
 
 4. Secrets alanina EPİAŞ bilgilerini tekrar ekleyin.
+
+## 5 Yillik Deep Learning Pipeline (ayri hat)
+
+Mevcut `python main.py` final ensemble'a **dokunmaz**. Tum ciktilar `*_5y` dosya adlariyla tutulur.
+
+```zsh
+# Tam hat (2020-01-01 -> bugun EPİAŞ fetch — uzun surer)
+python scripts/run_5y_dl_pipeline.py
+
+# Ham CSV hazirsa
+python scripts/run_5y_dl_pipeline.py --skip-fetch
+
+# Gecici test: mevcut final_selected_features ile
+python scripts/run_5y_dl_pipeline.py --skip-fetch --use-fallback-raw
+```
+
+Ciktilar: `data/processed/final_hourly_dataset_5y.csv`, `forecast_12h_sequence_dataset_5y.npz`, `data_quality_report_5y.json`, `data/models/scalers_5y.pkl`, `dl_models_metrics_5y.json`
+
+Teknik plan: `docs/dl_5y_technical_plan.md`
 
 ## Hata Cozumleri
 

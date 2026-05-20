@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from src.ptf_seasonal_baselines import prepare_kesin_hourly, seasonal_predictions_for_target
-
 from src.config import PROJECT_ROOT
 from src.model_splits import chronological_train_val_test_split, project_relative_path
+from src.ptf_seasonal_baselines import prepare_kesin_hourly, seasonal_predictions_for_target
 
 
 FORECAST_DATA_PATH = PROJECT_ROOT / "data" / "processed" / "forecast_12h_dataset.csv"
@@ -30,14 +28,26 @@ TARGET_COLUMN = "ptf_target"
 ID_COLUMNS = ["issue_datetime", "target_datetime", "forecast_horizon", TARGET_COLUMN]
 EPSILON = 1.0
 
-# CatBoost + kesinlesmis mevsimsel kaynaklar (yinelenen kolon yok)
 ENSEMBLE_SOURCE_COLS = (
     "pred_catboost",
     "pred_seasonal_blend",
     "pred_kesin_same_hour_yesterday",
     "pred_kesin_same_hour_last_week",
+    "pred_kesin_rolling_24h",
     "pred_kesin_rolling_168h",
 )
+
+ROLLING_WEIGHT_CAPS = {
+    "pred_kesin_rolling_24h": 0.35,
+    "pred_rolling_24h": 0.35,
+    "pred_kesin_rolling_168h": 0.35,
+    "pred_rolling_168h": 0.35,
+}
+
+SHORT_HORIZON_MIN_CATBOOST_BLEND = {1: 0.70, 2: 0.55, 3: 0.45}
+TREND_PENALTY_LAMBDA = 0.25
+MOTION_PREFERENCE_MARGIN = 0.06
+MAE_TOLERANCE_FOR_MOTION = 1.12
 
 
 @dataclass(frozen=True)
@@ -61,29 +71,21 @@ class FinalEnsembleSummary:
 
 
 def build_final_ensemble() -> FinalEnsembleSummary:
-    # Load baseline metrics
     baseline_metrics = _load_baseline_metrics()
-    
-    # Load data
+
     forecast_data = _read_forecast_data()
     hourly_data = _read_hourly_data()
     catboost_preds = _read_catboost_predictions()
-    
-    # Create simple baseline predictions
     simple_preds = _create_simple_baselines(forecast_data, hourly_data)
-    
-    # Merge all predictions
+
     all_preds = forecast_data[ID_COLUMNS].copy()
-    if "ptf_lag_1" in forecast_data.columns:
-        all_preds["pred_persistence"] = forecast_data["ptf_lag_1"]
-    if "kesin_seasonal_anchor" in forecast_data.columns:
-        all_preds["pred_dataset_seasonal"] = forecast_data["kesin_seasonal_anchor"]
     all_preds = all_preds.merge(catboost_preds, on=ID_COLUMNS[:3], how="left")
     all_preds = all_preds.merge(simple_preds, on=ID_COLUMNS[:3], how="left")
-    
+
     ensemble_weights: dict[int, dict[str, float]] = {}
     blend_weights: dict[int, float] = {}
     bias_corrections: dict[int, float] = {}
+    primary_model_by_horizon: dict[int, str] = {}
     clip_bounds: dict[int, dict[str, float]] = {}
 
     for horizon in range(1, 13):
@@ -95,84 +97,89 @@ def build_final_ensemble() -> FinalEnsembleSummary:
         pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in horizon_data.columns]
 
         weights, bias = _fit_stacked_ensemble(val_df, pred_cols)
-        catboost_w, blend_bias = _fit_catboost_seasonal_blend(val_df)
+        weights = _apply_weight_caps(weights)
+        catboost_w, blend_bias = _fit_catboost_seasonal_blend(val_df, horizon)
+
         ensemble_weights[horizon] = weights
         blend_weights[horizon] = catboost_w
         bias_corrections[horizon] = blend_bias
 
-        val_hybrid = np.nan_to_num(_hybrid_prediction(val_df, catboost_w, blend_bias), nan=0.0)
-        val_stacked = np.nan_to_num(_apply_ensemble(val_df, pred_cols, weights, bias), nan=0.0)
-        y_val = val_df[TARGET_COLUMN].to_numpy()
-        use_hybrid = mean_absolute_error(y_val, val_hybrid) <= mean_absolute_error(
-            y_val, val_stacked
-        )
-        ensemble_weights[horizon]["_use_hybrid"] = 1.0 if use_hybrid else 0.0
+        primary, val_score = _select_primary_on_validation(val_df, horizon, weights, bias, catboost_w, blend_bias)
+        primary_model_by_horizon[horizon] = primary
 
-        val_preds = val_hybrid if use_hybrid else val_stacked
-        val_preds = val_preds[~np.isnan(val_preds)]
-        if len(val_preds) > 0:
+        val_primary = _predict_with_strategy(val_df, horizon, primary, weights, bias, catboost_w, blend_bias)
+        val_primary = val_primary[~np.isnan(val_primary)]
+        if horizon <= 3:
+            clip_bounds[horizon] = {"lower": 0.0, "upper": 15000.0}
+        elif len(val_primary) > 0:
             clip_bounds[horizon] = {
-                "lower": max(0.0, float(np.percentile(val_preds, 1))),
-                "upper": float(np.percentile(val_preds, 99)),
+                "lower": max(0.0, float(np.percentile(val_primary, 0.5))),
+                "upper": float(np.percentile(val_primary, 99.5)),
             }
         else:
             clip_bounds[horizon] = {"lower": 0.0, "upper": 5000.0}
 
         print(f"  CatBoost blend weight: {catboost_w:.2f}")
-        print(f"  Use hybrid blend: {use_hybrid}")
+        print(f"  Primary model: {primary} (val composite score: {val_score:.2f})")
 
     final_predictions = []
     for horizon in range(1, 13):
         horizon_data = all_preds[all_preds["forecast_horizon"] == horizon].copy()
-        pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in horizon_data.columns]
+        primary = primary_model_by_horizon.get(horizon, "blend")
 
-        if ensemble_weights[horizon].get("_use_hybrid", 0) >= 0.5:
-            ensemble_pred = _hybrid_prediction(
-                horizon_data, blend_weights[horizon], bias_corrections[horizon]
-            )
-        else:
-            ensemble_pred = _apply_ensemble(
-                horizon_data, pred_cols, ensemble_weights[horizon], bias_corrections[horizon]
-            )
+        panel_pred = _predict_with_strategy(
+            horizon_data,
+            horizon,
+            primary,
+            ensemble_weights[horizon],
+            bias_corrections[horizon],
+            blend_weights[horizon],
+            bias_corrections[horizon],
+        )
+        stacked_pred = _predict_with_strategy(
+            horizon_data,
+            horizon,
+            "stacked",
+            ensemble_weights[horizon],
+            bias_corrections[horizon],
+            blend_weights[horizon],
+            bias_corrections[horizon],
+        )
 
-        seasonal = horizon_data["pred_seasonal_blend"].fillna(horizon_data["pred_catboost"])
-        catboost = horizon_data["pred_catboost"].fillna(seasonal)
-        ensemble_pred = np.where(np.isnan(ensemble_pred), catboost, ensemble_pred)
+        catboost = horizon_data["pred_catboost"].fillna(horizon_data["pred_seasonal_blend"]).to_numpy()
+        seasonal = horizon_data["pred_seasonal_blend"].fillna(horizon_data["pred_catboost"]).to_numpy()
 
-        ensemble_pred = np.clip(
-            ensemble_pred,
+        panel_pred = np.where(np.isnan(panel_pred), catboost, panel_pred)
+        panel_pred = np.clip(
+            panel_pred,
             clip_bounds[horizon]["lower"],
             clip_bounds[horizon]["upper"],
         )
 
-        horizon_data["final_predicted_ptf"] = ensemble_pred
-        horizon_data["absolute_error"] = np.abs(
-            horizon_data[TARGET_COLUMN] - horizon_data["final_predicted_ptf"]
-        )
+        horizon_data["pred_catboost_export"] = catboost
+        horizon_data["pred_seasonal_blend_export"] = seasonal
+        horizon_data["final_predicted_ptf"] = stacked_pred
+        horizon_data["panel_predicted_ptf"] = panel_pred
+        horizon_data["primary_model"] = primary
+        horizon_data["absolute_error"] = np.abs(horizon_data[TARGET_COLUMN] - horizon_data["panel_predicted_ptf"])
         final_predictions.append(horizon_data)
-    
+
     final_df = pd.concat(final_predictions, ignore_index=True)
-    
-    # Remove any rows with NaN predictions
-    final_df = final_df.dropna(subset=["final_predicted_ptf"])
-    
-    # Save final predictions
+    final_df = final_df.dropna(subset=["panel_predicted_ptf"])
+
     FINAL_PREDICTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     final_df.to_csv(FINAL_PREDICTIONS_PATH, index=False)
-    
-    # Calculate metrics
+
     overall = _metrics(
         final_df[TARGET_COLUMN].to_numpy(),
-        final_df["final_predicted_ptf"].to_numpy(),
+        final_df["panel_predicted_ptf"].to_numpy(),
     )
     horizon_metrics = _horizon_metrics(final_df)
     horizon_metrics.to_csv(FINAL_HORIZON_METRICS_PATH, index=False)
-    
-    # Create comparison with baseline
+
     comparison = _create_comparison(final_df, catboost_preds, baseline_metrics)
     comparison.to_csv(FINAL_COMPARISON_PATH, index=False)
-    
-    # Save metrics
+
     payload = {
         **overall,
         "baseline_comparison": {
@@ -184,16 +191,17 @@ def build_final_ensemble() -> FinalEnsembleSummary:
         "ensemble_weights": ensemble_weights,
         "blend_weights": blend_weights,
         "bias_corrections": bias_corrections,
+        "primary_model_by_horizon": primary_model_by_horizon,
         "clip_bounds": clip_bounds,
+        "trend_penalty_lambda": TREND_PENALTY_LAMBDA,
     }
     FINAL_METRICS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    
-    # Calculate improvements
+
     mae_improvement = (baseline_metrics.get("MAE", 0) - overall["MAE"]) / baseline_metrics.get("MAE", 1) * 100
     rmse_improvement = (baseline_metrics.get("RMSE", 0) - overall["RMSE"]) / baseline_metrics.get("RMSE", 1) * 100
     smape_improvement = (baseline_metrics.get("SMAPE", 0) - overall["SMAPE"]) / baseline_metrics.get("SMAPE", 1) * 100
     r2_improvement = overall["R2"] - baseline_metrics.get("R2", 0)
-    
+
     return FinalEnsembleSummary(
         overall_mae=overall["MAE"],
         overall_rmse=overall["RMSE"],
@@ -214,9 +222,53 @@ def build_final_ensemble() -> FinalEnsembleSummary:
     )
 
 
+def _trend_penalty(y: np.ndarray, pred: np.ndarray) -> float:
+    """Fark serileri arasindaki korelasyon eksikligi (0=iyi, 1=kotu)."""
+    dy = np.diff(y.astype(float))
+    dp = np.diff(pred.astype(float))
+    if len(dy) < 3 or np.std(dy) < 1e-6:
+        return 0.0
+    if np.std(dp) < 1e-6:
+        return 1.0
+    corr = float(np.corrcoef(dy, dp)[0, 1])
+    if np.isnan(corr):
+        return 1.0
+    return max(0.0, 1.0 - corr)
+
+
+def _motion_score(y: np.ndarray, pred: np.ndarray) -> float:
+    dy = np.diff(y.astype(float))
+    dp = np.diff(pred.astype(float))
+    if len(dy) < 2 or np.std(dy) < 1e-6 or np.std(dp) < 1e-6:
+        return 0.0
+    corr = float(np.corrcoef(dy, dp)[0, 1])
+    return 0.0 if np.isnan(corr) else corr
+
+
+def _composite_objective(y: np.ndarray, pred: np.ndarray) -> float:
+    pred = np.nan_to_num(pred, nan=0.0)
+    mae = mean_absolute_error(y, pred)
+    trend_pen = _trend_penalty(y, pred)
+    scale = max(float(np.std(y)), 50.0)
+    return mae + TREND_PENALTY_LAMBDA * trend_pen * scale
+
+
+def _apply_weight_caps(weights: dict[str, float]) -> dict[str, float]:
+    capped = dict(weights)
+    for col, cap in ROLLING_WEIGHT_CAPS.items():
+        if col in capped:
+            capped[col] = min(capped[col], cap)
+    total = sum(v for k, v in capped.items() if not k.startswith("_"))
+    if total > 1e-6:
+        for k in capped:
+            if not k.startswith("_"):
+                capped[k] = capped[k] / total
+    return capped
+
+
 def _load_baseline_metrics() -> dict[str, float]:
     if BASELINE_METRICS_PATH.exists():
-        with open(BASELINE_METRICS_PATH) as f:
+        with open(BASELINE_METRICS_PATH, encoding="utf-8") as f:
             return json.load(f)
     return {"MAE": 0, "RMSE": 0, "SMAPE": 0, "R2": 0}
 
@@ -250,22 +302,18 @@ def _read_catboost_predictions() -> pd.DataFrame:
 
 
 def _create_simple_baselines(forecast_data: pd.DataFrame, hourly_data: pd.DataFrame) -> pd.DataFrame:
-    """Kesinlesmis PTF mevsimsel baseline'lari (hedef saate gore)."""
     hourly = prepare_kesin_hourly(hourly_data)
-
     baselines = []
     for _, row in forecast_data.iterrows():
         issue_dt = row["issue_datetime"]
         target_dt = row["target_datetime"]
         seasonal = seasonal_predictions_for_target(hourly, issue_dt, target_dt)
-
         baselines.append(
             {
                 "issue_datetime": issue_dt,
                 "target_datetime": target_dt,
                 "forecast_horizon": row["forecast_horizon"],
                 **seasonal,
-                # Geriye uyumluluk (eski kolon adlari)
                 "pred_same_hour_yesterday": seasonal["pred_kesin_same_hour_yesterday"],
                 "pred_same_hour_last_week": seasonal["pred_kesin_same_hour_last_week"],
                 "pred_last_24h_mean": seasonal["pred_kesin_last_24h_mean"],
@@ -273,14 +321,10 @@ def _create_simple_baselines(forecast_data: pd.DataFrame, hourly_data: pd.DataFr
                 "pred_rolling_168h": seasonal["pred_kesin_rolling_168h"],
             }
         )
-
     return pd.DataFrame(baselines)
 
 
-def _fit_stacked_ensemble(
-    val_df: pd.DataFrame, pred_cols: list[str]
-) -> tuple[dict[str, float], float]:
-    """Non-negative stacking (Ridge benzeri, pozitif katsayilar)."""
+def _fit_stacked_ensemble(val_df: pd.DataFrame, pred_cols: list[str]) -> tuple[dict[str, float], float]:
     available_cols = [col for col in pred_cols if val_df[col].notna().any()]
     weights_dict = {col: 0.0 for col in pred_cols}
 
@@ -301,8 +345,7 @@ def _fit_stacked_ensemble(
 
     coef_sum = float(reg.coef_.sum())
     if coef_sum > 1e-6:
-        normalized = reg.coef_ / coef_sum
-        for col, weight in zip(available_cols, normalized):
+        for col, weight in zip(available_cols, reg.coef_ / coef_sum):
             weights_dict[col] = float(weight)
         bias = float(reg.intercept_)
     else:
@@ -313,25 +356,31 @@ def _fit_stacked_ensemble(
 
 
 def _apply_ensemble(df: pd.DataFrame, pred_cols: list[str], weights: dict[str, float], bias: float) -> np.ndarray:
-    """Stacked ensemble: intercept + agirlikli toplam."""
     X = df[pred_cols].fillna(df[pred_cols].median()).to_numpy()
     weight_array = np.array([weights.get(col, 0.0) for col in pred_cols])
     return np.dot(X, weight_array) + bias
 
 
-def _fit_catboost_seasonal_blend(val_df: pd.DataFrame) -> tuple[float, float]:
-    """CatBoost ile mevsimsel blend arasinda en iyi agirligi sec."""
+def _hybrid_prediction(df: pd.DataFrame, catboost_weight: float, bias: float) -> np.ndarray:
+    catboost = df["pred_catboost"].fillna(df["pred_seasonal_blend"]).to_numpy()
+    seasonal = df["pred_seasonal_blend"].fillna(df["pred_catboost"]).to_numpy()
+    return catboost_weight * catboost + (1.0 - catboost_weight) * seasonal + bias
+
+
+def _fit_catboost_seasonal_blend(val_df: pd.DataFrame, horizon: int) -> tuple[float, float]:
     y = val_df[TARGET_COLUMN].to_numpy()
     catboost = val_df["pred_catboost"].fillna(val_df["pred_seasonal_blend"]).to_numpy()
     seasonal = val_df["pred_seasonal_blend"].fillna(val_df["pred_catboost"]).to_numpy()
 
-    best_w = 1.0
-    best_mae = float("inf")
-    for w in np.linspace(0.0, 1.0, 21):
+    min_w = SHORT_HORIZON_MIN_CATBOOST_BLEND.get(horizon, 0.0)
+    best_w = max(min_w, 1.0)
+    best_score = float("inf")
+
+    for w in np.linspace(min_w, 1.0, 41):
         pred = w * catboost + (1.0 - w) * seasonal
-        mae = mean_absolute_error(y, pred)
-        if mae < best_mae:
-            best_mae = mae
+        score = _composite_objective(y, pred)
+        if score < best_score:
+            best_score = score
             best_w = float(w)
 
     blend_pred = best_w * catboost + (1.0 - best_w) * seasonal
@@ -339,10 +388,64 @@ def _fit_catboost_seasonal_blend(val_df: pd.DataFrame) -> tuple[float, float]:
     return best_w, bias
 
 
-def _hybrid_prediction(df: pd.DataFrame, catboost_weight: float, bias: float) -> np.ndarray:
-    catboost = df["pred_catboost"].fillna(df["pred_seasonal_blend"]).to_numpy()
-    seasonal = df["pred_seasonal_blend"].fillna(df["pred_catboost"]).to_numpy()
-    return catboost_weight * catboost + (1.0 - catboost_weight) * seasonal + bias
+def _predict_with_strategy(
+    df: pd.DataFrame,
+    horizon: int,
+    strategy: str,
+    weights: dict[str, float],
+    stacked_bias: float,
+    blend_w: float,
+    blend_bias: float,
+) -> np.ndarray:
+    pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in df.columns]
+    capped_weights = _apply_weight_caps(weights)
+
+    if strategy == "catboost":
+        return df["pred_catboost"].fillna(df["pred_seasonal_blend"]).to_numpy()
+    if strategy == "seasonal":
+        return df["pred_seasonal_blend"].fillna(df["pred_catboost"]).to_numpy()
+    if strategy == "blend":
+        return _hybrid_prediction(df, blend_w, blend_bias)
+    return _apply_ensemble(df, pred_cols, capped_weights, stacked_bias)
+
+
+def _select_primary_on_validation(
+    val_df: pd.DataFrame,
+    horizon: int,
+    weights: dict[str, float],
+    stacked_bias: float,
+    blend_w: float,
+    blend_bias: float,
+) -> tuple[str, float]:
+    y = val_df[TARGET_COLUMN].to_numpy()
+    candidates = {
+        "catboost": _predict_with_strategy(val_df, horizon, "catboost", weights, stacked_bias, blend_w, blend_bias),
+        "seasonal": _predict_with_strategy(val_df, horizon, "seasonal", weights, stacked_bias, blend_w, blend_bias),
+        "blend": _predict_with_strategy(val_df, horizon, "blend", weights, stacked_bias, blend_w, blend_bias),
+        "stacked": _predict_with_strategy(val_df, horizon, "stacked", weights, stacked_bias, blend_w, blend_bias),
+    }
+
+    scores = {name: _composite_objective(y, pred) for name, pred in candidates.items()}
+    motions = {name: _motion_score(y, pred) for name, pred in candidates.items()}
+
+    best_name = min(scores, key=scores.get)
+    best_score = scores[best_name]
+
+    cb_score = scores["catboost"]
+    cb_motion = motions["catboost"]
+
+    for name in candidates:
+        if name == "catboost":
+            continue
+        if cb_motion >= motions[name] + MOTION_PREFERENCE_MARGIN:
+            if cb_score <= scores[name] * MAE_TOLERANCE_FOR_MOTION:
+                return "catboost", cb_score
+
+    if horizon <= 3:
+        if cb_score <= best_score * MAE_TOLERANCE_FOR_MOTION and cb_motion >= motions.get(best_name, 0.0) - 0.02:
+            return "catboost", cb_score
+
+    return best_name, best_score
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
@@ -358,21 +461,32 @@ def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
 def _horizon_metrics(prediction_frame: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict] = []
     for horizon, group in prediction_frame.groupby("forecast_horizon"):
-        metrics = _metrics(group[TARGET_COLUMN].to_numpy(), group["final_predicted_ptf"].to_numpy())
+        metrics = _metrics(group[TARGET_COLUMN].to_numpy(), group["panel_predicted_ptf"].to_numpy())
         rows.append({"forecast_horizon": int(horizon), **metrics})
     return pd.DataFrame(rows).sort_values("forecast_horizon")
 
 
 def _create_comparison(final_df: pd.DataFrame, catboost_preds: pd.DataFrame, baseline_metrics: dict) -> pd.DataFrame:
-    """Create comparison between final ensemble and CatBoost baseline."""
-    comparison = final_df[["issue_datetime", "target_datetime", "forecast_horizon", TARGET_COLUMN, "final_predicted_ptf"]].copy()
-    comparison = comparison.merge(
-        catboost_preds[["issue_datetime", "target_datetime", "forecast_horizon", "pred_catboost"]],
-        on=["issue_datetime", "target_datetime", "forecast_horizon"],
-        how="left",
+    comparison = final_df[
+        [
+            "issue_datetime",
+            "target_datetime",
+            "forecast_horizon",
+            TARGET_COLUMN,
+            "panel_predicted_ptf",
+            "pred_catboost_export",
+            "pred_seasonal_blend_export",
+            "primary_model",
+        ]
+    ].copy()
+    comparison = comparison.rename(
+        columns={
+            "panel_predicted_ptf": "panel_ptf",
+            "pred_catboost_export": "pred_catboost",
+            "pred_seasonal_blend_export": "pred_seasonal_blend",
+        }
     )
     comparison["catboost_error"] = np.abs(comparison[TARGET_COLUMN] - comparison["pred_catboost"])
-    comparison["ensemble_error"] = np.abs(comparison[TARGET_COLUMN] - comparison["final_predicted_ptf"])
-    comparison["ensemble_better"] = comparison["ensemble_error"] < comparison["catboost_error"]
-    
+    comparison["panel_error"] = np.abs(comparison[TARGET_COLUMN] - comparison["panel_ptf"])
+    comparison["panel_better"] = comparison["panel_error"] < comparison["catboost_error"]
     return comparison

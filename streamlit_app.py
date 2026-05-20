@@ -12,6 +12,19 @@ from dotenv import load_dotenv
 from plotly.subplots import make_subplots
 
 from src.config import PROJECT_ROOT
+from src.dl_5y_config import HOURLY_5Y_PATH, START_DATE_5Y
+from src.epias_5y_panel import (
+    FEATURE_LABELS,
+    FETCH_LIVE_APP_PATH,
+    FETCH_PROGRESS_PATH,
+    RAW_5Y_DIR,
+    build_epias_5y_inventory,
+    get_live_fetch_snapshot,
+    inventory_summary_stats,
+    is_fetch_process_running,
+    load_epias_5y_timeseries,
+    sync_fetch_live_to_app_data,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -222,8 +235,15 @@ def load_final_predictions_prepared() -> pd.DataFrame:
 
     if "ptf_target" in out.columns and "actual_ptf" not in out.columns:
         out = out.rename(columns={"ptf_target": "actual_ptf"})
-    if "final_predicted_ptf" in out.columns and "predicted_ptf" not in out.columns:
+    if "panel_predicted_ptf" in out.columns:
+        out["predicted_ptf"] = out["panel_predicted_ptf"]
+    elif "final_predicted_ptf" in out.columns and "predicted_ptf" not in out.columns:
         out = out.rename(columns={"final_predicted_ptf": "predicted_ptf"})
+
+    if "pred_catboost_export" in out.columns and "pred_catboost" not in out.columns:
+        out["pred_catboost"] = out["pred_catboost_export"]
+    if "pred_seasonal_blend_export" in out.columns and "pred_seasonal_blend" not in out.columns:
+        out["pred_seasonal_blend"] = out["pred_seasonal_blend_export"]
 
     needed = {"target_datetime", "forecast_horizon", "actual_ptf", "predicted_ptf"}
     if not needed.issubset(set(out.columns)):
@@ -250,7 +270,7 @@ with st.sidebar:
     st.markdown("### 📊 Görünüm Modu")
     view_mode = st.radio(
         "Seçiniz",
-        ["Genel Bakış", "Veriler", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
+        ["Genel Bakış", "Veriler", "5Y EPİAŞ Verileri", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
         label_visibility="collapsed"
     )
     
@@ -290,7 +310,7 @@ with st.sidebar:
         """)
     
     st.markdown("---")
-    refresh = st.button("🔄 Veriyi Güncelle", type="primary", use_container_width=True)
+    refresh = st.button("🔄 Veriyi Güncelle", type="primary", width="stretch")
     st.caption("EPİAŞ verisi çekmek için kimlik bilgisi gerekli")
 
 
@@ -408,7 +428,7 @@ if view_mode == "Genel Bakış":
             )
             st.dataframe(
                 comp.style.format({"MAE": "{:.2f}", "RMSE": "{:.2f}", "SMAPE": "{:.2f}", "R2": "{:.4f}"}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         
@@ -425,7 +445,7 @@ if view_mode == "Genel Bakış":
                 st.info(f"🕐 **Son Güncelleme:** {dashboard_data.get('generated_at', '-')[:16]}")
 
         st.markdown("---")
-        st.markdown("### 📉 Gerçek vs Tahmin (Final Ensemble)")
+        st.markdown("### 📉 Gerçek vs Tahmin")
         if final_preds.empty:
             st.warning("Final ensemble tahmin dosyası bulunamadı (`data/processed/ptf_12h_final_predictions.csv`).")
         else:
@@ -447,8 +467,14 @@ if view_mode == "Genel Bakış":
                     if preds.empty:
                         st.warning("Seçilen gün aralığında veri yok. Gün sayısını artırmayı deneyin.")
                     else:
-                        mae_slice = float((preds["predicted_ptf"] - preds["actual_ptf"]).abs().mean())
-                        st.caption(f"Seçili aralık MAE (h={horizon_sel}): {mae_slice:,.2f} TL/MWh | Nokta sayısı: {len(preds):,}")
+                        mae_panel = float((preds["predicted_ptf"] - preds["actual_ptf"]).abs().mean())
+                        primary_label = "Panel tahmini"
+                        if "primary_model" in preds.columns and not preds["primary_model"].isna().all():
+                            primary_label = f"Panel ({preds['primary_model'].iloc[-1]})"
+                        st.caption(
+                            f"Seçili aralık MAE (h={horizon_sel}): {mae_panel:,.2f} TL/MWh | "
+                            f"Nokta: {len(preds):,} | {primary_label}"
+                        )
 
                         fig = go.Figure()
                         fig.add_trace(
@@ -456,26 +482,48 @@ if view_mode == "Genel Bakış":
                                 x=preds["target_datetime"],
                                 y=preds["actual_ptf"],
                                 mode="lines",
-                                name="Gerçek PTF",
-                                line=dict(color="#0f172a", width=2),
+                                name="Gerçek PTF (kesinleşmiş)",
+                                line=dict(color="#0f172a", width=2.5),
                             )
                         )
+                        if "pred_seasonal_blend" in preds.columns:
+                            mae_seas = float((preds["pred_seasonal_blend"] - preds["actual_ptf"]).abs().mean())
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=preds["target_datetime"],
+                                    y=preds["pred_seasonal_blend"],
+                                    mode="lines",
+                                    name=f"Mevsimsel baseline (MAE {mae_seas:,.0f})",
+                                    line=dict(color="#f59e0b", width=1.8, dash="dot"),
+                                )
+                            )
+                        if "pred_catboost" in preds.columns:
+                            mae_cb = float((preds["pred_catboost"] - preds["actual_ptf"]).abs().mean())
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=preds["target_datetime"],
+                                    y=preds["pred_catboost"],
+                                    mode="lines",
+                                    name=f"CatBoost residual (MAE {mae_cb:,.0f})",
+                                    line=dict(color="#a855f7", width=2, dash="dash"),
+                                )
+                            )
                         fig.add_trace(
                             go.Scatter(
                                 x=preds["target_datetime"],
                                 y=preds["predicted_ptf"],
                                 mode="lines",
-                                name="Final Tahmin (Ensemble)",
-                                line=dict(color="#10b981", width=2),
+                                name=f"Panel tahmini (MAE {mae_panel:,.0f})",
+                                line=dict(color="#10b981", width=2.5),
                             )
                         )
                         fig.update_layout(
-                            height=460,
+                            height=480,
                             margin=dict(l=20, r=20, t=30, b=20),
                             hovermode="x unified",
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
     
     else:
         st.warning("⚠️ Final metrikler bulunamadı. Önce ensemble sistemini çalıştırın.")
@@ -499,7 +547,7 @@ elif view_mode == "Veriler":
         st.markdown("### Son Kayıtlar")
         n = st.slider("Gösterilecek satır sayısı", min_value=50, max_value=5000, value=500, step=50)
         df_tail = final_dataset.sort_values("datetime").tail(int(n)).copy()
-        st.dataframe(df_tail, use_container_width=True, hide_index=True)
+        st.dataframe(df_tail, width="stretch", hide_index=True)
 
         st.markdown("### PTF Grafiği (Son 7 Gün)")
         df_plot = final_dataset.dropna(subset=["datetime", "ptf"]).sort_values("datetime").copy()
@@ -518,7 +566,140 @@ elif view_mode == "Veriler":
                 )
             )
             fig.update_layout(height=420, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
+
+
+# --- 5Y EPİAŞ raw data ---
+elif view_mode == "5Y EPİAŞ Verileri":
+    st.markdown("## 📡 5 Yıllık EPİAŞ Ham Verileri")
+    st.caption(
+        f"Hedef: **{START_DATE_5Y}** → bugün | Ham veri: `data/raw/epias_5y/` "
+        f"| GitHub canlı özet: `app_data/epias_5y_fetch_live.json`"
+    )
+
+    sync_fetch_live_to_app_data()
+    auto_refresh = st.checkbox("Canlı izleme (5 sn otomatik yenile)", value=True, key="epias5y_live")
+    snap = get_live_fetch_snapshot()
+    stats = snap["stats"]
+    inv = snap["inventory"]
+    prog = snap.get("progress") or {}
+    idx = int(prog.get("index") or 0)
+    tot = int(prog.get("total") or 26)
+    cur = prog.get("current") or "—"
+    pct = min(1.0, idx / tot) if tot else 0.0
+
+    st.markdown("### Canlı veri çekimi")
+    live_cols = st.columns([3, 1, 1, 1])
+    with live_cols[0]:
+        if snap["running"]:
+            st.success(f"Çekim **devam ediyor** — `{cur}` ({idx}/{tot})")
+        else:
+            st.info("Çekim şu an çalışmıyor (yerel) veya son durum GitHub özetinden okunuyor.")
+        st.progress(pct, text=f"İlerleme: {idx}/{tot} seri · Tam 5y: {stats.get('full', 0)}")
+    live_cols[1].metric("Tam 5y", stats.get("full", 0))
+    live_cols[2].metric("Kısmi", stats.get("partial", 0) + stats.get("short", 0))
+    live_cols[3].metric("Eksik", stats.get("missing", 0))
+
+    gh_cols = st.columns(2)
+    with gh_cols[0]:
+        st.caption(
+            f"GitHub özet güncelleme: **{snap.get('app_live_updated') or '—'}**  \n"
+            f"Dosya: `{FETCH_LIVE_APP_PATH.name}`"
+        )
+    with gh_cols[1]:
+        st.code(
+            "python scripts/push_fetch_live_to_github.py\n"
+            "# veya çekim sırasında:\n"
+            "python scripts/watch_5y_fetch.py --push-github",
+            language="bash",
+        )
+    st.caption(
+        "Streamlit Cloud bu repodan deploy edilir; `push` sonrası panel birkaç dakika içinde güncellenir. "
+        "Ham CSV dosyaları git'e gitmez (boyut), yalnızca özet JSON paylaşılır."
+    )
+
+    if not inv.empty:
+        inv_show = inv.copy()
+        if "Durum" in inv_show.columns:
+            inv_show["Durum"] = inv_show["Durum"].map(
+                {
+                    "Tam (5y)": "🟢 Tam (5y)",
+                    "Kısmi": "🟡 Kısmi",
+                    "Kısa (~1 yıl)": "🟠 Kısa",
+                    "Yok": "⚪ Yok",
+                }
+            ).fillna(inv_show["Durum"])
+        st.dataframe(
+            inv_show.style.format({"Kapsam %": "{:.1f}"}),
+            width="stretch",
+            hide_index=True,
+            height=min(520, 38 + len(inv_show) * 35),
+        )
+
+    if inv.empty and not RAW_5Y_DIR.exists() and not FETCH_LIVE_APP_PATH.exists():
+        st.error("Henüz veri yok. Çekim: `python scripts/run_5y_dl_pipeline.py --fetch-only`")
+    else:
+        if stats.get("full", 0) >= stats.get("total", 26):
+            st.success("Tüm seriler 5 yıllık kapsama yakın.")
+        elif stats.get("full", 0) >= 8:
+            st.warning(
+                f"Ana serilerin çoğu tamam ({stats.get('full', 0)}/{stats.get('total', 26)} tam 5y). "
+                "Kalan GOP/GİP/denge serileri sırada veya EPİAŞ'ta yok."
+            )
+
+        if HOURLY_5Y_PATH.exists():
+            h5 = pd.read_csv(HOURLY_5Y_PATH, parse_dates=["datetime"])
+            st.markdown("### İşlenmiş 5Y panel (`final_hourly_dataset_5y.csv`)")
+            st.success(
+                f"{len(h5):,} satır | {h5['datetime'].min()} → {h5['datetime'].max()} | {h5.shape[1]} kolon"
+            )
+
+        st.markdown("### Zaman serisi grafikleri")
+        plot_options = {
+            "PTF kesinleşmiş": ("ptf_kesinlesmis.csv", ["price", "mcp"]),
+            "PTF I-MCP": ("ptf_interim.csv", ["marketTradePrice", "price"]),
+            "Yük planı": ("load_forecast_plan.csv", ["lep"]),
+            "RES üretim/tahmin": ("res_generation_forecast.csv", None),
+            "Gerçek zamanlı üretim (toplam)": ("realtime_generation.csv", ["total"]),
+            "SMF": ("smf.csv", ["systemMarginalPrice"]),
+            "Sistem yönü": ("system_direction.csv", ["systemDirection", "direction"]),
+        }
+        choice = st.multiselect(
+            "Gösterilecek seriler",
+            list(plot_options.keys()),
+            default=["PTF kesinleşmiş", "RES üretim/tahmin"],
+        )
+        days = st.slider("Grafik penceresi (gün)", 7, 365 * 5, 90, 7)
+
+        for name in choice:
+            fname, cols = plot_options[name]
+            ts = load_epias_5y_timeseries(fname, cols)
+            if ts.empty:
+                st.info(f"{name}: veri yok veya okunamadı.")
+                continue
+            end = ts["datetime"].max()
+            ts = ts[ts["datetime"] >= end - pd.Timedelta(days=int(days))]
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(x=ts["datetime"], y=ts["value"], mode="lines", name=name, line=dict(width=1.5))
+            )
+            fig.update_layout(title=name, height=360, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig, width="stretch")
+
+        with st.expander("Ham CSV önizleme"):
+            pick = st.selectbox("Dosya", list(FEATURE_LABELS.keys()))
+            p = RAW_5Y_DIR / pick
+            if p.exists():
+                preview = pd.read_csv(p).tail(200)
+                st.dataframe(preview, width="stretch", hide_index=True)
+            else:
+                st.caption("Dosya henüz yok.")
+
+    if auto_refresh and is_fetch_process_running():
+        import time
+
+        time.sleep(5)
+        st.rerun()
 
 
 # --- Ensemble Details Section ---
@@ -548,7 +729,7 @@ elif view_mode == "Ensemble Detayları":
         weight_df = pd.DataFrame(weight_data)
         weight_df = weight_df.set_index("Horizon")
         
-        st.dataframe(weight_df.style.format("{:.1f}%"), use_container_width=True)
+        st.dataframe(weight_df.style.format("{:.1f}%"), width="stretch")
         
         # Bias correction
         st.markdown("### Horizon Bazlı Bias Düzeltmeleri")
@@ -574,7 +755,7 @@ elif view_mode == "Ensemble Detayları":
             yaxis_title="Bias (TL)",
             height=400
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         
         # Key insights
         st.markdown("### 🔍 Temel Bulgular")
@@ -660,13 +841,18 @@ elif view_mode == "Canlı Tahmin":
                     line=dict(color="#a855f7", width=2, dash="dash"),
                 )
             )
-        ensemble_col = "ensemble_ptf" if "ensemble_ptf" in live_bundle.columns else "predicted_ptf"
+        panel_col = "panel_ptf" if "panel_ptf" in live_bundle.columns else "ensemble_ptf"
+        if panel_col not in live_bundle.columns:
+            panel_col = "predicted_ptf" if "predicted_ptf" in live_bundle.columns else "ensemble_ptf"
+        primary_note = ""
+        if "primary_model" in live_bundle.columns:
+            primary_note = f" [{live_bundle['primary_model'].iloc[0]}]"
         fig.add_trace(
             go.Scatter(
                 x=live_bundle["target_datetime"],
-                y=live_bundle[ensemble_col],
+                y=live_bundle[panel_col],
                 mode="lines+markers",
-                name="Ensemble (final)",
+                name=f"Panel tahmini{primary_note}",
                 line=dict(color="#0ea5e9", width=3),
                 marker=dict(size=9),
             )
@@ -680,20 +866,20 @@ elif view_mode == "Canlı Tahmin":
             margin=dict(l=20, r=20, t=50, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         table_cols = {
             "forecast_horizon": "Saat (+)",
             "target_datetime": "Hedef Zaman",
             "interim_ptf": "I-MCP (kesim)",
-            "naive_ptf": "Naive",
+            "seasonal_ptf": "Mevsimsel",
             "catboost_ptf": "CatBoost",
-            ensemble_col: "Ensemble",
+            panel_col: "Panel tahmin",
         }
         show_cols = [c for c in table_cols if c in live_bundle.columns]
         table = live_bundle[show_cols].rename(columns=table_cols)
         fmt = {v: "{:.2f}" for v in table_cols.values() if v != "Hedef Zaman" and v != "Saat (+)"}
-        st.dataframe(table.style.format(fmt), use_container_width=True, hide_index=True)
+        st.dataframe(table.style.format(fmt), width="stretch", hide_index=True)
     else:
         st.warning("⚠️ Canlı tahmin yok. Sidebar'dan **Veriyi Güncelle** ile pipeline çalıştırın.")
 
@@ -733,7 +919,7 @@ elif view_mode == "Performans Analizi":
             barmode="group",
             height=450
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         
         # R² comparison chart
         fig2 = go.Figure()
@@ -756,7 +942,7 @@ elif view_mode == "Performans Analizi":
             barmode="group",
             height=450
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
         
         # Improvement table
         st.markdown("### İyileştirme Tablosu")
@@ -791,7 +977,7 @@ elif view_mode == "Performans Analizi":
                 "Ensemble R²": "{:.4f}",
                 "R² İyileştirme": "{:.4f}"
             }),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
         

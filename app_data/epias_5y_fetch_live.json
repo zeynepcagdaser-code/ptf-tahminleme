@@ -1,0 +1,275 @@
+{
+  "updated_at": "2026-05-20 14:06:55",
+  "running": true,
+  "progress": {},
+  "stats": {
+    "total": 26,
+    "full": 20,
+    "partial": 0,
+    "short": 1,
+    "missing": 5
+  },
+  "series": [
+    {
+      "Dosya": "ptf_interim.csv",
+      "Seri": "PTF (I-MCP / kesinleşmemiş)",
+      "Satır": 17832,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-18 23:00:00",
+      "Kapsam %": 99.9,
+      "Durum": "Tam (5y)",
+      "Kaynak": "api_merged"
+    },
+    {
+      "Dosya": "ptf_kesinlesmis.csv",
+      "Seri": "PTF (MCP / kesinleşmiş)",
+      "Satır": 55944,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "load_forecast_plan.csv",
+      "Seri": "Yük tahmin planı",
+      "Satır": 55967,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-21 22:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "real_time_consumption.csv",
+      "Seri": "Gerçekleşen tüketim",
+      "Satır": 55957,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 12:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "realtime_generation.csv",
+      "Seri": "Gerçek zamanlı üretim (kaynak kırılımı)",
+      "Satır": 55957,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 12:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "res_generation_forecast.csv",
+      "Seri": "RES üretim/tahmin",
+      "Satır": 335217,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-18 23:45:00",
+      "Kapsam %": 99.9,
+      "Durum": "Tam (5y)",
+      "Kaynak": "cached_local"
+    },
+    {
+      "Dosya": "generation_forecast.csv",
+      "Seri": "GES üretim tahmini",
+      "Satır": 0,
+      "İlk tarih": NaN,
+      "Son tarih": NaN,
+      "Kapsam %": 0.0,
+      "Durum": "Yok",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "yekdem_realtime.csv",
+      "Seri": "YEKDEM gerçek zamanlı üretim",
+      "Satır": 54442,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-18 09:00:00",
+      "Kapsam %": 99.9,
+      "Durum": "Tam (5y)",
+      "Kaynak": "cached_local"
+    },
+    {
+      "Dosya": "unlicensed_generation_total.csv",
+      "Seri": "Lisanssız üretim",
+      "Satır": 55488,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-04-30 23:00:00",
+      "Kapsam %": 99.1,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "smf.csv",
+      "Seri": "SMF",
+      "Satır": 55944,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "system_direction.csv",
+      "Seri": "Sistem yönü",
+      "Satır": 55902,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-18 05:00:00",
+      "Kapsam %": 99.9,
+      "Durum": "Tam (5y)",
+      "Kaynak": "cached_local"
+    },
+    {
+      "Dosya": "gop_fiyattan_bagimsiz_alis.csv",
+      "Seri": "GOP fiyattan bağımsız alış",
+      "Satır": 55944,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "gop_fiyattan_bagimsiz_satis.csv",
+      "Seri": "GOP fiyattan bağımsız satış",
+      "Satır": 55944,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "grf_tl.csv",
+      "Seri": "Doğalgaz referans (GRF TL)",
+      "Satır": 2331,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 00:00:00",
+      "Kapsam %": 99.9,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "usd_try.csv",
+      "Seri": "USD/TRY",
+      "Satır": 349,
+      "İlk tarih": "2024-12-31 03:00:00",
+      "Son tarih": "2026-05-15 03:00:00",
+      "Kapsam %": 21.4,
+      "Durum": "Kısa (~1 yıl)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "dam_supply_demand.csv",
+      "Seri": "GOP arz-talep",
+      "Satır": 0,
+      "İlk tarih": NaN,
+      "Son tarih": NaN,
+      "Kapsam %": 0.0,
+      "Durum": "Yok",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "dam_trade_volume.csv",
+      "Seri": "GOP işlem hacmi",
+      "Satır": 55944,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-19 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "dam_clearing_quantity.csv",
+      "Seri": "GOP eşleşme miktarı",
+      "Satır": 55968,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "bpm_order_summary_up.csv",
+      "Seri": "YAL talimat",
+      "Satır": 55968,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "bpm_order_summary_down.csv",
+      "Seri": "YAT talimat",
+      "Satır": 55968,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "idm_weighted_average_price.csv",
+      "Seri": "GİP ağırlıklı ortalama fiyat",
+      "Satır": 55968,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-05-20 23:00:00",
+      "Kapsam %": 100.0,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "idm_trade_value.csv",
+      "Seri": "GİP işlem hacmi",
+      "Satır": 0,
+      "İlk tarih": NaN,
+      "Son tarih": NaN,
+      "Kapsam %": 0.0,
+      "Durum": "Yok",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "imbalance_quantity.csv",
+      "Seri": "Dengesizlik miktarı (aylık)",
+      "Satır": 55488,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-04-30 23:00:00",
+      "Kapsam %": 99.1,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "imbalance_amount.csv",
+      "Seri": "Dengesizlik tutarı (aylık)",
+      "Satır": 55488,
+      "İlk tarih": "2020-01-01 00:00:00",
+      "Son tarih": "2026-04-30 23:00:00",
+      "Kapsam %": 99.1,
+      "Durum": "Tam (5y)",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "yek_generation_cost.csv",
+      "Seri": "YEK üretim maliyeti (aylık)",
+      "Satır": 0,
+      "İlk tarih": NaN,
+      "Son tarih": NaN,
+      "Kapsam %": 0.0,
+      "Durum": "Yok",
+      "Kaynak": "failed"
+    },
+    {
+      "Dosya": "yek_portfolio_income.csv",
+      "Seri": "YEKDEM portföy geliri (aylık)",
+      "Satır": 0,
+      "İlk tarih": NaN,
+      "Son tarih": NaN,
+      "Kapsam %": 0.0,
+      "Durum": "Yok",
+      "Kaynak": "failed"
+    }
+  ],
+  "github_note": "Bu dosya push edilince Streamlit Cloud paneli güncellenir."
+}

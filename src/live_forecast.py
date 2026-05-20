@@ -9,7 +9,9 @@ import pandas as pd
 from src.build_final_ensemble import (
     ENSEMBLE_SOURCE_COLS,
     _apply_ensemble,
+    _apply_weight_caps,
     _hybrid_prediction,
+    _predict_with_strategy,
 )
 from src.config import PROJECT_ROOT
 from src.ptf_seasonal_baselines import prepare_kesin_hourly, seasonal_predictions_for_target
@@ -22,7 +24,6 @@ LIVE_BUNDLE_PATH = PROJECT_ROOT / "data" / "processed" / "ptf_12h_live_bundle.cs
 
 
 def build_live_forecast_bundle() -> pd.DataFrame:
-    """Kesim anı için I-MCP, naive, CatBoost ve ensemble canlı tahminlerini üretir."""
     hourly_raw = pd.read_csv(HOURLY_PATH)
     hourly_raw["datetime"] = pd.to_datetime(hourly_raw["datetime"], errors="coerce")
     hourly_raw = hourly_raw.dropna(subset=["datetime"]).sort_values("datetime")
@@ -36,46 +37,47 @@ def build_live_forecast_bundle() -> pd.DataFrame:
     interim_at_cutoff = float(ptf_known.iloc[-1])
 
     catboost_live = _read_catboost_live(cutoff)
-    model_anchor = interim_at_cutoff
-    if not catboost_live.empty and "interim_anchor" in catboost_live.columns:
-        anchor_val = catboost_live["interim_anchor"].dropna()
-        if not anchor_val.empty:
-            model_anchor = float(anchor_val.iloc[0])
-
-    weights, blend_weights, biases, clip_bounds, use_hybrid = _load_ensemble_params()
+    params = _load_ensemble_params()
 
     rows: list[dict] = []
     for horizon in range(1, 13):
         target_dt = cutoff + pd.Timedelta(hours=horizon)
         seasonal = seasonal_predictions_for_target(hourly_idx, cutoff, target_dt)
-        naive = seasonal.get("pred_seasonal_blend", np.nan)
+        seasonal_ptf = float(seasonal.get("pred_seasonal_blend", np.nan))
         catboost = _catboost_price(catboost_live, horizon)
 
         pred_row = {
             "pred_kesin_same_hour_yesterday": seasonal["pred_kesin_same_hour_yesterday"],
             "pred_kesin_same_hour_last_week": seasonal["pred_kesin_same_hour_last_week"],
+            "pred_kesin_rolling_24h": seasonal["pred_kesin_rolling_24h"],
             "pred_kesin_rolling_168h": seasonal["pred_kesin_rolling_168h"],
-            "pred_seasonal_blend": seasonal["pred_seasonal_blend"],
+            "pred_seasonal_blend": seasonal_ptf,
             "pred_catboost": catboost if catboost is not None else np.nan,
         }
         row_df = pd.DataFrame([pred_row])
-        pred_cols = [c for c in ENSEMBLE_SOURCE_COLS if c in row_df.columns]
 
-        if use_hybrid.get(horizon, True):
-            ensemble = _hybrid_prediction(
-                row_df, blend_weights.get(horizon, 1.0), biases.get(horizon, 0.0)
-            )[0]
-        else:
-            ensemble = _apply_ensemble(
-                row_df,
-                pred_cols,
-                weights.get(horizon, {c: 1.0 / len(pred_cols) for c in pred_cols}),
-                biases.get(horizon, 0.0),
-            )[0]
-        bounds = clip_bounds.get(horizon, {"lower": 0, "upper": 5000})
-        ensemble = float(np.clip(ensemble, bounds["lower"], bounds["upper"]))
-        if np.isnan(ensemble):
-            ensemble = catboost if catboost is not None else float(naive)
+        primary = params["primary_model"].get(horizon, "blend")
+        panel = _predict_with_strategy(
+            row_df,
+            horizon,
+            primary,
+            params["weights"].get(horizon, {}),
+            params["biases"].get(horizon, 0.0),
+            params["blend_weights"].get(horizon, 1.0),
+            params["biases"].get(horizon, 0.0),
+        )[0]
+
+        stacked = _apply_ensemble(
+            row_df,
+            [c for c in ENSEMBLE_SOURCE_COLS if c in row_df.columns],
+            _apply_weight_caps(params["weights"].get(horizon, {})),
+            params["biases"].get(horizon, 0.0),
+        )[0]
+
+        bounds = params["clip_bounds"].get(horizon, {"lower": 0, "upper": 5000})
+        panel = float(np.clip(panel, bounds["lower"], bounds["upper"]))
+        if np.isnan(panel):
+            panel = catboost if catboost is not None else seasonal_ptf
 
         rows.append(
             {
@@ -83,11 +85,13 @@ def build_live_forecast_bundle() -> pd.DataFrame:
                 "target_datetime": target_dt,
                 "forecast_horizon": horizon,
                 "interim_ptf": interim_at_cutoff,
-                "model_anchor_ptf": model_anchor,
-                "seasonal_anchor_ptf": seasonal.get("kesin_seasonal_anchor"),
-                "naive_ptf": float(naive) if not np.isnan(naive) else np.nan,
+                "seasonal_ptf": seasonal_ptf,
+                "naive_ptf": seasonal_ptf,
                 "catboost_ptf": catboost,
-                "ensemble_ptf": ensemble,
+                "ensemble_ptf": panel,
+                "panel_ptf": panel,
+                "stacked_ptf": stacked,
+                "primary_model": primary,
             }
         )
 
@@ -117,20 +121,21 @@ def _catboost_price(catboost_live: pd.DataFrame, horizon: int) -> float | None:
     return max(0.0, float(row["predicted_ptf"].iloc[0]))
 
 
-def _load_ensemble_params() -> tuple[dict, dict, dict, dict, dict]:
-    if not FINAL_METRICS_PATH.exists():
-        return {}, {}, {}, {}, {}
-    payload = json.loads(FINAL_METRICS_PATH.read_text(encoding="utf-8"))
-    weights_raw = payload.get("ensemble_weights", {})
-    blend_raw = payload.get("blend_weights", {})
-    biases_raw = payload.get("bias_corrections", {})
-    clip_raw = payload.get("clip_bounds", {})
-    weights = {int(k): v for k, v in weights_raw.items()}
-    blend_weights = {int(k): float(v) for k, v in blend_raw.items()}
-    biases = {int(k): float(v) for k, v in biases_raw.items()}
-    clip_bounds = {int(k): v for k, v in clip_raw.items()}
-    use_hybrid = {
-        int(k): float(v.get("_use_hybrid", 1.0)) >= 0.5
-        for k, v in weights_raw.items()
+def _load_ensemble_params() -> dict:
+    empty: dict = {
+        "weights": {},
+        "blend_weights": {},
+        "biases": {},
+        "clip_bounds": {},
+        "primary_model": {},
     }
-    return weights, blend_weights, biases, clip_bounds, use_hybrid
+    if not FINAL_METRICS_PATH.exists():
+        return empty
+
+    payload = json.loads(FINAL_METRICS_PATH.read_text(encoding="utf-8"))
+    empty["weights"] = {int(k): v for k, v in payload.get("ensemble_weights", {}).items()}
+    empty["blend_weights"] = {int(k): float(v) for k, v in payload.get("blend_weights", {}).items()}
+    empty["biases"] = {int(k): float(v) for k, v in payload.get("bias_corrections", {}).items()}
+    empty["clip_bounds"] = {int(k): v for k, v in payload.get("clip_bounds", {}).items()}
+    empty["primary_model"] = {int(k): str(v) for k, v in payload.get("primary_model_by_horizon", {}).items()}
+    return empty

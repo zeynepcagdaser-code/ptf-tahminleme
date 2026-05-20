@@ -126,7 +126,7 @@ FINAL_EPIAS_FEATURES: tuple[FinalFeatureSpec, ...] = (
 )
 
 
-def run_fetch_final_selected_features() -> dict[str, Any]:
+def run_fetch_final_selected_features(*, skip_if_exists: bool = True) -> dict[str, Any]:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,7 @@ def run_fetch_final_selected_features() -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
     for spec in FINAL_EPIAS_FEATURES:
-        result = fetcher.fetch_epias_feature(spec)
+        result = fetcher.fetch_epias_feature(spec, skip_if_exists=skip_if_exists)
         results.append(result)
         if not result.success:
             failures.append({**asdict(spec), "error": result.error})
@@ -185,8 +185,17 @@ class FinalSelectedFeatureFetcher:
         self.timeout = self.settings.timeout_seconds
         self.page_size = self.settings.page_size
 
-    def fetch_epias_feature(self, spec: FinalFeatureSpec) -> FetchResult:
+    def fetch_epias_feature(self, spec: FinalFeatureSpec, *, skip_if_exists: bool = True) -> FetchResult:
         output_path = RAW_DIR / spec.output_file
+        if skip_if_exists and output_path.exists() and output_path.stat().st_size > 100:
+            try:
+                rows = len(pd.read_csv(output_path))
+                if rows >= 48:
+                    print(f"[SKIP] {spec.feature_name} — mevcut ({rows:,} satir)")
+                    return FetchResult(spec.feature_name, True, rows, "cached_local", str(output_path))
+            except Exception:
+                pass
+
         frames: list[pd.DataFrame] = []
         last_error = ""
 
@@ -220,6 +229,16 @@ class FinalSelectedFeatureFetcher:
             source = "api_partial" if last_error else "api"
             return FetchResult(spec.feature_name, True, len(data), source, str(output_path), last_error)
 
+        if output_path.exists() and output_path.stat().st_size > 100:
+            rows = len(pd.read_csv(output_path))
+            return FetchResult(
+                spec.feature_name,
+                True,
+                rows,
+                "cached_partial",
+                str(output_path),
+                last_error or "empty response",
+            )
         if output_path.exists():
             output_path.unlink()
         return FetchResult(spec.feature_name, False, 0, "failed", str(output_path), last_error or "empty response")

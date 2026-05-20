@@ -57,6 +57,7 @@ def update_dashboard_snapshot() -> None:
             "bias_corrections": final_metrics.get("bias_corrections"),
         },
         "live_forecast": live_bundle.to_dict(orient="records"),
+        "primary_model_by_horizon": final_metrics.get("primary_model_by_horizon", {}),
     }
 
     DASHBOARD_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
