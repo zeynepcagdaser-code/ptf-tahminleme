@@ -302,47 +302,17 @@ with st.sidebar:
     st.header("⚡ PTF Tahmin Sistemi")
     st.markdown("---")
     
-    st.markdown("### 📊 Görünüm Modu")
+    st.markdown("### 📊 Menü")
     view_mode = st.radio(
         "Seçiniz",
-        ["Genel Bakış", "Veriler", "5Y EPİAŞ Verileri", "DL Modeller (5Y)", "Canlı Tahmin", "Ensemble Detayları", "Performans Analizi"],
-        label_visibility="collapsed"
+        ["Genel Bakış", "Canlı Tahmin", "Veriler", "Model Karşılaştırma", "Debug"],
+        label_visibility="collapsed",
     )
     
-    st.markdown("---")
-    st.markdown("### ℹ️ Proje Hakkında")
-    with st.expander("Sistem Mimarisi", expanded=False):
-        st.markdown("""
-        **Ensemble Sistemi:**
-        - CatBoost (ML modeli)
-        - Same Hour Yesterday (dün aynı saat)
-        - Same Hour Last Week (geçen hafta aynı saat)
-        - Rolling 24h Mean (24 saatlik hareketli ortalama)
-        - Rolling 168h Mean (haftalık hareketli ortalama)
-        
-        **Bias Correction:**
-        - Her horizon için ayrı bias düzeltmesi
-        - Sistemik underprediction'ı ortadan kaldırır
-        
-        **Optimizasyon:**
-        - Validation set üzerinde ağırlık optimizasyonu
-        - Horizon-specific weight tuning
-        """)
-    
-    with st.expander("Metrikler", expanded=False):
-        st.markdown("""
-        **MAE (Mean Absolute Error):**
-        Ortalama mutlak hata (TL/MWh)
-        
-        **RMSE (Root Mean Squared Error):**
-        Kök ortalama kare hata (TL/MWh)
-        
-        **SMAPE (Symmetric MAPE):**
-        Simetrik mutlak yüzde hata
-        
-        **R² (R-squared):**
-        Belirleme katsayısı (1 = mükemmel)
-        """)
+    with st.expander("Bilgi", expanded=False):
+        st.markdown(
+            "Bu panel, 12 saat ileri PTF tahmini için üretilen **final ensemble** çıktıları ve 5y DL denemelerini gösterir."
+        )
     
     st.markdown("---")
     st.success(f"**Aktif model:** {PANEL_SOURCES.label}")
@@ -406,6 +376,19 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# Menü sadeleştirme: Mevcut alt sayfaları aynı kodu kullanarak yeniden yönlendiriyoruz.
+if view_mode == "Model Karşılaştırma":
+    view_mode = "DL Modeller (5Y)"
+elif view_mode == "Debug":
+    st.markdown("## 🛠️ Debug")
+    debug_view = st.radio(
+        "Sayfa",
+        ["5Y EPİAŞ Verileri", "Ensemble Detayları", "Performans Analizi"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    view_mode = debug_view
 
 
 # --- Overview Section ---
